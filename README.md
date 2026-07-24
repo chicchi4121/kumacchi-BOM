@@ -1,155 +1,197 @@
-# くまっちボム！ (Phase1〜2 + VRM対応の第一歩)
+/**
+ * VRMSystem.js
+ * ------------------------------------------------------------
+ * VRMキャラクターのアップロード・読込・差し替えを担当するシステム。
+ *
+ * 開発ルール8「VRMシステムはゲームロジックから分離し、キャラクター
+ * 差し替えのみで動作する構造にすること」に従い、本システムは
+ * Player.setDisplayObject()を通じて見た目を差し替えるだけで、
+ * 移動・当たり判定等のゲームロジックには一切干渉しない。
+ *
+ * 実装方針（現状のスコープ）:
+ *   ボンバーマン系の見下ろし2Dグリッド上でVRMをリアルタイム3D表示・
+ *   アニメーションさせるのは大掛かりになるため、Phase3の第一段階として
+ *   「VRMモデルを正面/背面/左/右の4方向から1枚ずつレンダリングし、
+ *   それぞれのcanvasをPhaserの静止画テクスチャとして使い、移動方向
+ *   (Player.facing)に応じて差し替える」方式を採用する。
+ *   将来的にライブ3D表示（歩行アニメーション等）に発展させる場合は、
+ *   本クラスのAPI(renderSnapshotSet)は変えずに内部実装だけ差し替え
+ *   られるようにしてある。
+ *
+ * Three.js / @pixiv/three-vrm はビルドステップを増やさないよう
+ * index.htmlのimport map経由でCDNからロードする（ベア指定子でdynamic
+ * import）。Node環境（ユニットテスト）ではこれらのモジュールは決して
+ * importされない（実際にVRMを読み込むメソッドが呼ばれた時だけdynamic
+ * importが走るため、モジュール自体の読み込みはNode上でも安全に行える）。
+ * ------------------------------------------------------------
+ */
+export class VRMSystem {
+  constructor() {
+    this._modulesPromise = null;
+    // タイトル画面からアップロードされたVRM(このブラウザタブ内でのみ有効。
+    // ファイル本体はサイズの都合上LocalStorageには保存しない）。
+    this.customArrayBuffer = null;
+    this.customFileName = null;
+  }
 
-ボンバーマン系対戦アクションゲーム。本リポジトリは開発仕様書のPhase1
-（ゲーム基盤）とPhase2（ゲーム完成：アイテム・AI・勝敗判定・UI・BGM・
-効果音）に加え、Phase3のVRM対応の第一歩（VRMモデルを自キャラの見た目に
-使う機能）までを実装したものです。
+  /** タイトル画面のVRMアップロード用。読み込んだファイルの中身を記憶する */
+  setCustomVrm(arrayBuffer, fileName) {
+    this.customArrayBuffer = arrayBuffer;
+    this.customFileName = fileName;
+  }
 
-## 動かし方
+  hasCustomVrm() {
+    return this.customArrayBuffer !== null;
+  }
 
-ES Modulesを使用しているため、`file://`で直接開くとCORSエラーになります。
-簡易サーバーを立ち上げてアクセスしてください。
+  /** Three.js/GLTFLoader/three-vrmをCDN(import map経由)から遅延ロードする */
+  _loadModules() {
+    if (!this._modulesPromise) {
+      console.log('[VRMSystem] Three.js / three-vrm をCDNから読み込み中...');
+      this._modulesPromise = Promise.all([
+        import(/* webpackIgnore: true */ 'three'),
+        import(/* webpackIgnore: true */ 'three/addons/loaders/GLTFLoader.js'),
+        import(/* webpackIgnore: true */ '@pixiv/three-vrm'),
+      ])
+        .then((modules) => {
+          console.log('[VRMSystem] Three.js / three-vrm の読み込みに成功しました。');
+          return modules;
+        })
+        .catch((e) => {
+          // 次回呼び出し時に再試行できるようキャッシュを破棄する
+          this._modulesPromise = null;
+          console.error(
+            '[VRMSystem] Three.js / three-vrm のCDN読み込みに失敗しました。' +
+              'ネットワーク環境やindex.htmlのimport mapのURL/バージョン指定をご確認ください。',
+            e
+          );
+          throw e;
+        });
+    }
+    return this._modulesPromise;
+  }
 
-```bash
-npm run dev
-# もしくは
-python3 -m http.server 8080
-```
+  /**
+   * VRMファイルの中身(ArrayBuffer)から、正面(down)・背面(up)・左(left)・
+   * 右(right)の4方向の静止画スナップショットを描画し、
+   * { down, up, left, right } (各値はHTMLCanvasElement)として返す。
+   * キー名はPlayer.facing('up'|'down'|'left'|'right')にそのまま対応する
+   * （'down'=画面手前=正面、'up'=画面奥=背面、という向き）。
+   * 失敗した場合は例外を投げる（呼び出し側でcatchし、デフォルト見た目に
+   * フォールバックすること）。
+   *
+   * @param {ArrayBuffer} arrayBuffer
+   * @param {number} size - 出力canvasの一辺(px)
+   * @param {(stage: string) => void} [onProgress] - 進行状況を通知するコールバック
+   * @returns {Promise<{down: HTMLCanvasElement, up: HTMLCanvasElement, left: HTMLCanvasElement, right: HTMLCanvasElement}>}
+   */
+  async renderSnapshotSet(arrayBuffer, size = 128, onProgress = () => {}) {
+    onProgress('loading-modules');
+    const [THREE, { GLTFLoader }, threeVrm] = await this._loadModules();
+    const { VRMLoaderPlugin, VRMUtils } = threeVrm;
 
-ブラウザで `http://localhost:8080` を開いてください。
+    onProgress('parsing');
+    console.log('[VRMSystem] VRMファイルをパース中...', { byteLength: arrayBuffer.byteLength });
 
-## テスト
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMLoaderPlugin(parser));
 
-Phaser非依存のコアロジックに対する簡易ユニットテストを同梱しています。
+    const gltf = await new Promise((resolve, reject) => {
+      loader.parse(arrayBuffer, '', resolve, reject);
+    });
 
-```bash
-node test_phase1.mjs   # マップ生成・爆風伝播・乱数（Phase1）
-node test_phase2.mjs   # アイテム効果・勝敗判定/順位確定・AI（Phase2）
-node test_phase3.mjs   # VRMSystemの状態管理・同梱VRMファイルの構造検証（Phase3）
-```
+    const vrm = gltf.userData.vrm;
+    if (!vrm) {
+      throw new Error('VRMデータが見つかりません（VRM拡張を含まないglTFファイルの可能性があります）');
+    }
+    console.log('[VRMSystem] VRMのパースに成功しました。4方向のスナップショットを描画します。');
+    onProgress('rendering');
 
-VRMの実際の読込・3Dレンダリングはブラウザ側のWebGL/Three.jsに依存するため、
-Node上のユニットテストでは検証できません。実機（ブラウザ）で「ゲーム開始」
-してみて、自キャラの見た目が四角から差し替わるかをご確認ください。
+    VRMUtils.removeUnnecessaryVertices(gltf.scene);
+    VRMUtils.removeUnnecessaryJoints(gltf.scene);
+    vrm.update(0);
 
-## 操作方法
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(size, size);
+    renderer.setClearColor(0x000000, 0);
 
-- 矢印キー（↑↓←→）: 移動
-- Space: 爆弾設置
-- Esc: ポーズ
+    const scene = new THREE.Scene();
+    scene.add(vrm.scene);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    dirLight.position.set(0.5, 1, 1);
+    scene.add(dirLight);
 
-タイトル画面の「ゲーム開始」→ロビー画面で参加人数・AI難易度・制限時間を
-選んでから対戦を開始します（現状ローカルでの複数人操作には未対応のため、
-自分以外の参加者は全てAIです）。
+    // モデル全体(頭のてっぺんから足元まで)が余白付きで画角に収まるよう、
+    // バウンディングボックスの縦横サイズからカメラ距離を計算する。
+    // (以前は近似的にmaxDim*1.5という固定倍率で距離を決めていたため、
+    //  実際にはFOV28度では縦方向の収まりが約75%にしかならず、頭や足が
+    //  フレームからはみ出して見切れてしまっていた。今回はFOVと縦横の
+    //  実寸法から必要な距離を三角関数で正しく逆算し、さらに余白
+    //  (paddingFactor)を持たせることで頭が切れないようにする。)
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const dimensions = new THREE.Vector3();
+    box.getSize(dimensions);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
 
-## 現在の実装状況
+    const height = dimensions.y || 1;
+    const horizontal = Math.max(dimensions.x, dimensions.z) || height * 0.4;
 
-### Phase1: ゲーム基盤
+    const fovDeg = 28;
+    const fovRad = (fovDeg * Math.PI) / 180;
+    const paddingFactor = 1.35; // 上下左右にゆとりを持たせ、頭や手足が見切れないようにする
+    const distForHeight = (height * paddingFactor) / 2 / Math.tan(fovRad / 2);
+    const distForWidth = (horizontal * paddingFactor) / 2 / Math.tan(fovRad / 2);
+    const distance = Math.max(distForHeight, distForWidth, height * 0.9);
 
-- [x] Phaser 3 環境構築（CDN読み込み、ビルドステップなし）
-- [x] マップのランダム生成（毎試合、開始地点は安全地帯を保証）
-- [x] プレイヤー移動（グリッドベース、壁・ブロックとの当たり判定）
-- [x] 爆弾設置・約3秒後の爆発・十字方向の爆風・壁で停止
-- [x] 爆弾同士の誘爆（連鎖爆発）
+    const camera = new THREE.PerspectiveCamera(fovDeg, 1, 0.05, 50);
+    camera.position.set(center.x, center.y, center.z + distance);
+    camera.lookAt(center);
 
-**仕様変更（3回目のフィードバック反映）**: 壊せない壁(HARD)は通り抜け
-できません（従来通り移動を阻みます）。壊せる壁(SOFT/ITEM)は、👻(GHOST)
-アイテムを取得しているプレイヤー（AIも含む）のみ通り抜けできます。未取得の
-間はSOFT/ITEMブロックも通常の壁と同様に移動を阻む障害物です。爆風は
-従来通り壊せない壁の手前で止まり、壊せるブロックに当たるとそこまで届いて
-破壊し、そこで止まります。また、👻取得済みで壊せる壁の中に立っている間は
-爆弾を設置できません（通り抜けられることを利用した安全地帯化を防ぐため）。
+    // three-vrmはモデルの-Z方向を正面としている。カメラは+Z側に固定した
+    // ままモデル自体をY軸回転させることで、正面/背面/左右の4方向を撮影する。
+    //   down (画面手前=正面): 180度回転させてカメラの方を向かせる
+    //   up   (画面奥=背面)  : 回転させず、モデルの背中をカメラに向ける
+    //   left / right        : 90度ずつ回転させ、左右の側面をカメラに向ける
+    const ROTATIONS = {
+      down: Math.PI,
+      up: 0,
+      left: Math.PI / 2,
+      right: -Math.PI / 2,
+    };
 
-### Phase2: ゲーム完成
+    const result = {};
+    for (const [facing, rotY] of Object.entries(ROTATIONS)) {
+      vrm.scene.rotation.y = rotY;
+      vrm.update(0);
+      renderer.render(scene, camera);
+      const glCanvas = renderer.domElement;
 
-- [x] アイテム出現・取得・効果適用（💣🔥👟🛡❤️👻💥、ItemSystem）
-- [x] AI行動（爆弾回避・撃破チャンスの実行・積極的なブロック破壊・アイテム取得・
-      追跡・簡易閉じ込め戦術、難易度別パラメータ）
-- [x] 詳細な勝敗判定（残機→撃破数→抽選）・死亡順に基づく最終順位確定
-- [x] UI強化（ロビー画面での対戦設定、HUDへの順位表示、リザルトの詳細スコア表）
-- [x] 試合開始前カウントダウン（3・2・1・START）
-- [x] BGM・効果音（Web Audio APIによる合成音。実音源への差し替えはSoundSystem.jsのSE_DEFINITIONS/BGM_DEFINITIONSを変更するだけでOK）
+      // 重要: glCanvas(renderer.domElement)は'webgl'コンテキストが紐付いた
+      // canvasであり、一度webglコンテキストを取得したcanvasは二度と
+      // getContext('2d')を取得できない（nullが返る）。Phaser.Textures.addCanvas()
+      // は内部で2Dコンテキスト経由のピクセル読み取り(getImageData等)を行うため、
+      // webgl canvasをそのまま渡すと「Cannot read properties of null
+      // (reading 'getImageData')」で失敗する。
+      // そのため、描画結果を独立した2D canvasへdrawImageでコピーしてから使う。
+      const canvas2d = document.createElement('canvas');
+      canvas2d.width = size;
+      canvas2d.height = size;
+      canvas2d.getContext('2d').drawImage(glCanvas, 0, 0, size, size);
+      result[facing] = canvas2d;
+      onProgress(`rendered-${facing}`);
+    }
 
-### Phase3: VRM対応（第一歩のみ）
+    renderer.dispose();
 
-- [x] タイトル画面の「VRM変更」から`.vrm`ファイルをアップロードできる
-- [x] アップロード（または`assets/vrm/kumacchi.vrm`のデフォルト）したVRMを
-      正面から1枚レンダリングし、自キャラの見た目（静止画）として使用する
+    console.log('[VRMSystem] 4方向のスナップショット描画が完了しました。', { size, boxDimensions: dimensions, distance });
+    onProgress('done');
+    return result;
+  }
+}
 
-**現状の割り切り**（将来の改善ポイント）:
-
-- ライブ3D表示・歩行アニメーションではなく「正面向きの静止画スナップショット」
-  1枚を貼り付ける方式（見下ろし2Dグリッド上でリアルタイム3D表示するのは
-  大掛かりになるため、Phase3の第一段階としてこの方式を採用）
-- 方向転換しても同じ画像のまま（上下左右で見た目が変わらない）
-- アップロードしたVRM本体はブラウザのタブを閉じると消える（LocalStorageには
-  ファイル名のみ保存。ファイルサイズの都合上、本体そのものの永続化は
-  今後Supabase Storage等と連携するPhase4以降で検討）
-- 敵AIの見た目は引き続きプレースホルダー（色付き四角）のまま
-- Three.js / @pixiv/three-vrm はビルドに含めず、`index.html`のimport map
-  経由でCDN(jsDelivr)から読み込む方式。CDNに繋がらない環境やVRMの
-  パース失敗時は自動的に元の色付き四角にフォールバックする
-
-**修正済み: 「VRM読み込み失敗: Cannot read properties of null (reading
-'getImageData')」エラーについて**: このエラーは、VRMを描画する
-`THREE.WebGLRenderer`のcanvas(`renderer.domElement`)を、そのままPhaserの
-`textures.addCanvas()`に渡していたことが原因でした。1つのcanvas要素は
-一度`'webgl'`コンテキストを取得すると二度と`getContext('2d')`を取得できない
-仕様のため、Phaser内部の2D読み取り処理が失敗していました。
-`VRMSystem.renderSnapshot()`の最後で、WebGL描画結果を独立した2D canvasへ
-`drawImage()`でコピーしてから返すように修正済みです。
-
-**「VRMが表示されない」場合のデバッグ**: ゲーム画面右上に読み込み状況
-（読込中/描画中/失敗理由）を小さく表示するようにしました。失敗した場合は
-そこにエラー内容が出るほか、ブラウザの開発者ツール（F12）のConsoleタブにも
-`[VRMSystem]`/`[GameScene]`のログが出ます。このサンドボックス環境では
-Phaser同様CDNへの到達がブロックされておりThree.js/three-vrmの実読み込みを
-確認できていないため、`index.html`のimport mapに指定したURL・バージョン
-（`three@0.160.0`、`@pixiv/three-vrm@2`）が正しく解決するかは実機での
-確認が必要です。表示されない場合は右上のステータス表示かConsoleのエラー
-内容を教えていただければ、そこから原因を特定して修正します。
-
-## 未実装（Phase3の残り〜以降で対応予定）
-
-- 必殺技の発動（SkillSystemはゲージ管理のみ実装済み、発動UI・入力は未接続）
-- サイコロ6面ステージ、アニメーション/エフェクト強化
-- Supabase連携（ランキング・セーブ）
-- オンライン対戦（NetworkSystem）
-- ローカルでの複数人同時操作（ホットシート対戦用の複数キーマップ）
-- BGM/効果音の実音源（Suno制作分）への差し替え
-
-詳細は各ファイル内のコメント（`TODO(PhaseN): ...`）を参照してください。
-
-## 同梱デフォルトVRM(`assets/vrm/kumacchi.vrm`)について
-
-このファイルに埋め込まれたVRMメタ情報を確認したところ、
-`allowedUserName: "OnlyAuthor"`（作者本人のみ利用可）・
-`licenseName: "Redistribution_Prohibited"`（再配布禁止）と設定されています。
-ご自身が作者であれば問題ありませんが、他の方が作ったモデルをこのファイル名で
-使っている場合は、GitHubへのpush（公開リポジトリでの再配布に当たる可能性）
-の前にライセンス条件をご確認ください。
-
-## GitHubへの登録
-
-このフォルダは既に `git init` 済み・初回コミット済みです。GitHubで空の
-リポジトリを作成し、以下を実行するだけでプッシュできます。
-
-```bash
-git remote add origin https://github.com/<あなたのユーザー名>/kumacchi-bomb.git
-git push -u origin main
-```
-
-## Renderへのデプロイ
-
-ビルド不要な静的サイト（Phaser CDN読み込み + ES Modules）なので、
-Renderの「Static Site」で十分動きます。
-
-1. Render ( https://dashboard.render.com ) にログイン
-2. 「New +」→「Static Site」を選択し、GitHubの `kumacchi-bomb` リポジトリを接続
-3. 設定項目:
-   - Build Command: 空欄のままでOK（何もビルドしない）
-   - Publish Directory: `.`（リポジトリ直下、`index.html`がある場所）
-4. 「Create Static Site」でデプロイ完了。数十秒でURLが発行されます。
-
-同梱の `render.yaml` を使えば、「New +」→「Blueprint」からリポジトリを
-選択するだけで上記設定が自動適用されます。
+// アプリ全体で共有するシングルトン。
+// customVrmArrayBuffer: タイトル画面からアップロードされたVRM(このブラウザ
+// セッション中のみ有効。LocalStorageにはファイル名など軽量な情報のみ保存する)。
+export const vrmSystem = new VRMSystem();
