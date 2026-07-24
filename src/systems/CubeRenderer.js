@@ -346,20 +346,45 @@ export class CubeRenderer {
     });
   }
 
-  /** カメラを指定した面の正面から見る位置へ移す(即座に切り替え。v1ではアニメーションなし) */
+  /**
+   * カメラを指定した面をプレイしやすい斜め見下ろし角度から見る位置へ移す
+   * (即座に切り替え。v1ではアニメーションなし)。
+   *
+   * 【不具合修正】以前は面の法線(N)方向から完全に真正面(真上から見下ろす形)
+   * で見ていたため、カメラの視線とブロックの厚み・立方体の奥行き方向が
+   * ほぼ平行になり、「厚みが全く見えない」「サイコロの辺や他の面が視界に
+   * 入らない」= 見た目がただの平面にしか見えない、という状態になっていた。
+   * (他の5面のメッシュ自体はシーンに常に存在しているが、カメラが真正面
+   * すぎてフレームに入らなかっただけ)。
+   * これを、面の法線方向(N)と面内の「上」方向(-D)を混ぜたオフセットで
+   * カメラを斜め上に配置する見下ろし視点(いわゆる3/4視点・アイソメ風)に
+   * 変更し、ブロックの厚みや立方体の辺、隣接面の一部が画面に映り込む
+   * ことで「サイコロの上に立っている」立体感が出るようにした。
+   */
   followFace(face) {
     if (!this.ready || this._currentFace === face) return;
     this._currentFace = face;
+    const THREE = this._THREE;
     const { N, D } = FACE_AXES[face];
-    const viewDistance = CUBE_RADIUS * 3;
-    const faceCenter = [N[0] * CUBE_RADIUS, N[1] * CUBE_RADIUS, N[2] * CUBE_RADIUS];
-    this.camera.position.set(
-      faceCenter[0] + N[0] * viewDistance,
-      faceCenter[1] + N[1] * viewDistance,
-      faceCenter[2] + N[2] * viewDistance
-    );
-    this.camera.up.set(-D[0], -D[1], -D[2]);
-    this.camera.lookAt(faceCenter[0], faceCenter[1], faceCenter[2]);
+    const nVec = new THREE.Vector3(N[0], N[1], N[2]);
+    const upVec = new THREE.Vector3(-D[0], -D[1], -D[2]); // 面内ローカルの「上」方向
+    const faceCenter = nVec.clone().multiplyScalar(CUBE_RADIUS);
+
+    // elevationDeg: 0度=面と水平(真横から), 90度=面の法線方向から真上(旧仕様の平面的な見下ろし)。
+    // 50度前後にすることで、プレイに必要な見下ろし感を保ちつつ、
+    // ブロックの厚み・立方体の辺・隣接面が視界に入る「斜めから見下ろす」構図にする。
+    const elevationRad = THREE.MathUtils.degToRad(50);
+    const distance = CUBE_RADIUS * 3.6;
+    const outward = Math.sin(elevationRad) * distance; // N方向(面から離れる)成分
+    const along = Math.cos(elevationRad) * distance; // upVec方向(面内の「奥」)成分
+
+    const camPos = faceCenter.clone()
+      .add(nVec.clone().multiplyScalar(outward))
+      .add(upVec.clone().multiplyScalar(along));
+
+    this.camera.position.copy(camPos);
+    this.camera.up.copy(upVec);
+    this.camera.lookAt(faceCenter);
   }
 
   /** 毎フレーム呼び出す: 動的エフェクトを更新して描画する */
