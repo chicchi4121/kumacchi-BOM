@@ -76,6 +76,68 @@ console.log('\n== 3. CubeStage.generate() ==');
   );
 }
 
+console.log('\n== 3b. CubeStage.generate(): 四隅+approachマスが壊せるブロックとして開放されている ==');
+{
+  // 外周は基本HARD(壊せない壁)。ただし各隅の「隅そのもの」と「そこへ歩いて
+  // 近づくためのapproachマス(辺沿いの隣)」の計2マスは例外的にSOFT(壊せる
+  // ブロック)として開放されており、両方を壊せば内側から歩いて隅まで到達し、
+  // 面の端を超えて隣接する面へ渡れるようになっている。
+  // (隅そのものだけを開放しても、その2つの直交隣接マスがどちらも外周HARDの
+  // ままだと、そこへ近づく手段が無く実質誰も到達できない、という抜けが
+  // あったため、approachマスもあわせて開放するよう修正した)
+  const { BLOCK_TYPES } = await import('./src/constants/GameConstants.js');
+  const cube = new CubeStage(11, 11);
+  cube.generate(6);
+
+  function cornerNotches(stage) {
+    const lastCol = stage.cols - 1;
+    const lastRow = stage.rows - 1;
+    return [
+      { corner: [0, 0], approach: [1, 0] },
+      { corner: [lastCol, 0], approach: [lastCol - 1, 0] },
+      { corner: [0, lastRow], approach: [1, lastRow] },
+      { corner: [lastCol, lastRow], approach: [lastCol - 1, lastRow] },
+    ];
+  }
+
+  let allOpen = true;
+  for (const f of CUBE_FACE_NAMES) {
+    const stage = cube.getFaceStage(f);
+    for (const { corner, approach } of cornerNotches(stage)) {
+      if (stage.getBlockType(...corner) !== BLOCK_TYPES.SOFT) allOpen = false;
+      if (stage.getBlockType(...approach) !== BLOCK_TYPES.SOFT) allOpen = false;
+    }
+  }
+  check('6面すべての四隅+approachマスが壊せるブロック(SOFT)になっている', allOpen);
+
+  // 四隅・approachマス以外の外周(辺の途中)は従来通りHARD(壊せない壁)のままであることも確認する
+  let edgesStillHard = true;
+  const midStage = cube.getFaceStage('FRONT');
+  const midCol = Math.floor(midStage.cols / 2);
+  if (midStage.getBlockType(midCol, 0) !== BLOCK_TYPES.HARD) edgesStillHard = false;
+  if (midStage.getBlockType(0, midCol) !== BLOCK_TYPES.HARD) edgesStillHard = false;
+  check('辺の途中(隅・approachマス以外)は従来通りHARDのまま', edgesStillHard);
+
+  // 実際のプレイに即した順序で破壊してみる: まずapproachマスを壊し(内側から
+  // 歩いて近づける)、そこから隅マスを壊す。その後、隅マスからは実際に
+  // resolveMove()で隣接面へ渡れることを確認する。
+  const frontStage = cube.getFaceStage('FRONT');
+  frontStage.breakBlock(1, 0); // 左上の隅へのapproachマスを破壊 -> EMPTYになり歩けるようになる
+  frontStage.breakBlock(0, 0); // 続けて隅そのものを破壊 -> EMPTYになる
+  check('approachマスを破壊すると内側から歩いて通れるようになる', frontStage.isWalkable(1, 0));
+  check('隅マスを破壊すると歩いて立てるようになる', frontStage.isWalkable(0, 0));
+  const viaLeft = cube.resolveMove('FRONT', 0, 0, 'left');
+  const viaUp = cube.resolveMove('FRONT', 0, 0, 'up');
+  check(
+    '隅マスに立った状態から面の外へ移動すると隣接面へ渡れる(left方向)',
+    viaLeft && viaLeft.crossed === true && viaLeft.face !== 'FRONT'
+  );
+  check(
+    '隅マスに立った状態から面の外へ移動すると隣接面へ渡れる(up方向、left方向とは別の面)',
+    viaUp && viaUp.crossed === true && viaUp.face !== 'FRONT' && viaUp.face !== viaLeft.face
+  );
+}
+
 console.log('\n== 4. resolveMove: 面内の通常移動 ==');
 {
   const cube = new CubeStage(11, 11);

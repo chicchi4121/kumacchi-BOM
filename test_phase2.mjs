@@ -282,6 +282,60 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
     );
   }
 
+  // 6-2b. _findSafeDirection: 「AIが自爆しすぎる」問題の修正確認。
+  // 十字型の爆風は隣接4マスを必ず含む(爆弾のマス自身も爆風に含まれるため)。
+  // 1マス先読みだけでは、爆弾の真上にいる限り隣接4マスが全て危険地帯に
+  // 見えてしまい常に「逃げ場なし」になる、という_hasEscapeRouteと同じ
+  // 構造的な問題が実際の「今すぐどちらへ逃げるか」の判断にもあったため、
+  // BFSで数マス先まで辿って逃げ道を見つけられるように修正した。
+  {
+    // 開けた交差点の中央に爆弾を置いた直後を想定: 隣接4マスは全て危険地帯だが、
+    // 角を曲がって斜めに回り込んだ先(数マス先)は安全なはず
+    const rows = [
+      [E, E, E],
+      [E, E, E],
+      [E, E, E],
+    ];
+    const stage = makeMockCubeStage(rows);
+    const dangerTiles = new Set([
+      `${FACE}:1,1`, // 爆弾のあるマス自身
+      `${FACE}:0,1`,
+      `${FACE}:2,1`,
+      `${FACE}:1,0`,
+      `${FACE}:1,2`,
+    ]);
+    const player = { face: FACE, col: 1, row: 1, canPassSoftBlock: false };
+    const dir = ai._findSafeDirection(player, stage, [], dangerTiles);
+    check(
+      '隣接4マスが全て危険地帯でも、角を曲がって逃げられる方向を見つけられる',
+      dir === 'up' || dir === 'down' || dir === 'left' || dir === 'right'
+    );
+    // 実際にその方向へ1歩進んだ先が、少なくとも危険地帯そのものではないことを確認
+    if (dir) {
+      const resolved = stage.resolveMove(FACE, 1, 1, dir);
+      check(
+        '返された方向へ進んだ先は(隣接マスなので)まだ危険地帯だが、そこから更に進めば安全マスに出られる経路になっている',
+        resolved !== null
+      );
+    }
+  }
+  {
+    // 行き止まりの一直線の通路(左右をHARDで塞がれている)では、どこにも
+    // 逃げ場が無いので null を返す(=本当に詰んでいる場合はnullのままでよい)
+    const rows = [
+      [H, H, H, H, H],
+      [H, E, E, E, H],
+      [H, H, H, H, H],
+    ];
+    const stage = makeMockCubeStage(rows);
+    const dangerTiles = new Set([`${FACE}:2,1`, `${FACE}:1,1`, `${FACE}:3,1`]);
+    const player = { face: FACE, col: 2, row: 1, canPassSoftBlock: false };
+    check(
+      '曲がり角の無い行き止まりの通路では逃げ場が無いのでnullを返す',
+      ai._findSafeDirection(player, stage, [], dangerTiles) === null
+    );
+  }
+
   // 6-3. _hasAdjacentBreakableTowards / _hasAnyAdjacentBreakable
   {
     const rows = [

@@ -10,15 +10,19 @@
  * いずれにも依存しない純粋なデータ構造・ロジックのみを扱う。
  *
  * 現状のスコープ（v1）:
- * - 各面は独立したミニマップとして生成する（面をまたいだ迷路の連続性は
- *   持たせない）。各面の中央を、その面に割り当てられたプレイヤー1人分の
- *   安全地帯として確保する。
+ * - 各面は独立したミニマップとして生成する。各面の中央を、その面に
+ *   割り当てられたプレイヤー1人分の安全地帯として確保する。
+ * - 面の外周は基本的にHARD(壊せない壁)だが、四隅とその approach マス
+ *   (隅へ歩いて近づくための辺沿いの隣接1マス、計8マス)だけは例外的に
+ *   壊せるブロック(SOFT)として開放しており(_openFaceCorners)、そこを
+ *   壊せば(または👻取得済みならそのまま)面の端まで到達して隣接する
+ *   面へ渡れる。辺の途中(隅・approachマス以外)からは面をまたげない。
  * - 爆風・爆弾の誘爆は面をまたいで伝播しない（爆風の計算はExplosion.jsが
  *   各面のStageに対して行うため、自然と面内で完結する）。
  * - プレイヤーの移動のみが面をまたぐ（resolveMove）。
  * ------------------------------------------------------------
  */
-import { CUBE_FACE_NAMES, CUBE_FACE_COLS, CUBE_FACE_ROWS, MAX_PLAYERS } from '../constants/GameConstants.js';
+import { CUBE_FACE_NAMES, CUBE_FACE_COLS, CUBE_FACE_ROWS, MAX_PLAYERS, BLOCK_TYPES } from '../constants/GameConstants.js';
 import { CROSSING_TABLE } from '../constants/CubeTopology.js';
 import { Stage } from './Stage.js';
 
@@ -61,6 +65,8 @@ export class CubeStage {
       // 使いたいので、中央も追加で安全地帯化し、開始地点情報を上書きする。
       stage._clearSafeZone(centerCol, centerRow);
       stage.startPositions = [{ col: centerCol, row: centerRow }];
+      // 面の四隅を壊せるブロックとして開放する(下記_openFaceCorners参照)。
+      this._openFaceCorners(stage);
     }
 
     const count = Math.max(1, Math.min(MAX_PLAYERS, playerCount, CUBE_FACE_NAMES.length));
@@ -71,6 +77,47 @@ export class CubeStage {
     }));
 
     return this.faces;
+  }
+
+  /**
+   * 面の四隅(col=0,row=0 / col=cols-1,row=0 / col=0,row=rows-1 / col=cols-1,row=rows-1)を
+   * 壊せるブロック(SOFT)として開放する。
+   *
+   * Stage.generate()は面の外周を常にHARD(壊せない壁)として生成するため、
+   * このままでは面の端のマスに一度も立てず、resolveMove()が用意している
+   * 「面の端を超えると隣接する面へ渡る」処理が実際には一度も発動しない
+   * (=見た目は立方体でも、実際には他の面へ移動する手段が無い)という
+   * 状態になってしまう。
+   *
+   * 【重要】隅のマス1つだけを開放しても、その直交2方向の隣接マスは
+   * どちらも外周(HARD)のままなので、実際にはそこへ歩いて近づく手段も
+   * 爆風を通す手段も無く「開放したはずの隅に誰も到達できない」という
+   * 状態になってしまう。そのため、各隅について「隅そのもの」に加えて、
+   * 内側のマスから歩いて近づくための隣接1マス(辺沿いの隣)もあわせて
+   * 壊せるブロックにしておく(=隅へ到達するための2マス分の「通路」を
+   * 用意する)。隅へ到達できれば、そこから残るもう一方の方向へも
+   * resolveMove()でそのまま面をまたげるため、隣接approachマスは1つで
+   * 両方向(例: 左上の隅なら上方向・左方向の両方)への面またぎが可能になる。
+   * 辺の途中(隅とその approach マス以外)は従来通りHARDのままにして、
+   * 各面の見た目上の輪郭(サイコロの面の境目)ははっきり残す。
+   */
+  _openFaceCorners(stage) {
+    const lastCol = stage.cols - 1;
+    const lastRow = stage.rows - 1;
+    // [隅, 隅へ近づくためのapproachマス] のペアを4隅ぶん
+    const notches = [
+      [[0, 0], [1, 0]],
+      [[lastCol, 0], [lastCol - 1, 0]],
+      [[0, lastRow], [1, lastRow]],
+      [[lastCol, lastRow], [lastCol - 1, lastRow]],
+    ];
+    for (const [corner, approach] of notches) {
+      for (const [col, row] of [corner, approach]) {
+        if (stage.getBlockType(col, row) === BLOCK_TYPES.HARD) {
+          stage.setBlockType(col, row, BLOCK_TYPES.SOFT);
+        }
+      }
+    }
   }
 
   getStartPositions() {

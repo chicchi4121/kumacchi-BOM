@@ -35,28 +35,32 @@ import { Explosion } from './Explosion.js';
 const AI_PROFILES = Object.freeze({
   [AI_DIFFICULTY.EASY]: {
     decisionIntervalMs: 500, // 判断の間隔（長いほど反応が遅い）
-    mistakeChance: 0.35, // 危険地帯にいても回避に失敗する確率
+    // 危険地帯にいても回避に失敗する確率。
+    // (自爆しすぎ対策で全難易度引き下げ済み。_findSafeDirection自体のBFS化で
+    //  「回避を試みたのに失敗する」ケースは大幅に減ったため、mistakeChanceは
+    //  純粋に「そもそも回避を試みない」割合として機能する)
+    mistakeChance: 0.2,
     bombChance: 0.35, // ブロック破壊(徘徊/進路上)を試みる確率
     killShotChance: 0.5, // 撃破チャンスを実行に移す確率
     chaseChance: 0.3, // プレイヤーを追跡する確率（それ以外は徘徊/アイテム優先）
   },
   [AI_DIFFICULTY.NORMAL]: {
     decisionIntervalMs: 350,
-    mistakeChance: 0.18,
+    mistakeChance: 0.1,
     bombChance: 0.55,
     killShotChance: 0.7,
     chaseChance: 0.55,
   },
   [AI_DIFFICULTY.HARD]: {
     decisionIntervalMs: 220,
-    mistakeChance: 0.07,
+    mistakeChance: 0.04,
     bombChance: 0.7,
     killShotChance: 0.85,
     chaseChance: 0.75,
   },
   [AI_DIFFICULTY.EXPERT]: {
     decisionIntervalMs: 120,
-    mistakeChance: 0.02,
+    mistakeChance: 0.01,
     bombChance: 0.85,
     killShotChance: 0.97,
     chaseChance: 0.9,
@@ -192,18 +196,76 @@ export class AI {
     return bombs.some((b) => !b.detonated && b.face === face && b.col === col && b.row === row);
   }
 
-  /** 危険地帯ではない隣接マスの中から、より遠くへ離れられる方向を選ぶ */
+  /**
+   * 危険地帯から逃げるための最初の一歩の方向を選ぶ。
+   *
+   * 【重要な修正・自爆しすぎ問題への対応】爆弾は十字型に爆風が伝播し、
+   * 爆弾のあるマス自身も爆風に含まれるため、爆弾のちょうど真上や爆風の
+   * 軸線上にいる場合、隣接する4マスは(blastRange>=1なら)ほぼ必ず爆風の
+   * 届く範囲に入っている。そのため「隣接マスがdangerTilesに含まれて
+   * いないか」だけを見る1マス先読みでは、そもそも安全な隣接マスが
+   * 見つからず常に「逃げ場なし」と誤判定してしまい、AIがその場に
+   * 立ち尽くして自爆する主な原因になっていた
+   * (_hasEscapeRouteで既に対応済みだった「隣接4マスは爆風に含まれる」
+   * という同じ構造的な問題が、実際に「今すぐどちらへ動くか」を決める
+   * こちらの関数には反映されていなかった)。
+   * 隣接マスに安全な場所が無い場合は、角を曲がって回り込めば爆風の外に
+   * 出られることが多いため、数マス先まで幅優先探索(BFS)して、安全な
+   * マスへ辿り着く経路の「最初の一歩」の方向を返すようにした。
+   */
   _findSafeDirection(player, stage, bombs, dangerTiles) {
-    const candidates = [];
+    const canPassSoftBlock = player.canPassSoftBlock;
+    const startKey = tileKey(player.face, player.col, player.row);
+    const visited = new Set([startKey]);
+
+    // 深さ0(隣接マス): 安全な方向が複数あれば毎回同じ方向へ偏らないようランダムに選ぶ
+    const immediateSafe = [];
+    let frontier = [];
     for (const dir of DIRECTIONS) {
       const resolved = stage.resolveMove(player.face, player.col, player.row, dir.name);
       if (!resolved) continue;
-      if (!stage.isWalkable(resolved.face, resolved.col, resolved.row, { canPassSoftBlock: player.canPassSoftBlock })) continue;
+      if (!stage.isWalkable(resolved.face, resolved.col, resolved.row, { canPassSoftBlock })) continue;
       if (this._isBlockedByBomb(bombs, resolved.face, resolved.col, resolved.row)) continue;
-      if (dangerTiles.has(tileKey(resolved.face, resolved.col, resolved.row))) continue;
-      candidates.push(dir.name);
+      const key = tileKey(resolved.face, resolved.col, resolved.row);
+      if (visited.has(key)) continue;
+      visited.add(key);
+      if (!dangerTiles.has(key)) {
+        immediateSafe.push(dir.name);
+      } else {
+        frontier.push({ face: resolved.face, col: resolved.col, row: resolved.row, firstDir: dir.name });
+      }
     }
-    return candidates.length > 0 ? candidates[Math.floor(random.next() * candidates.length)] : null;
+    if (immediateSafe.length > 0) {
+      return immediateSafe[Math.floor(random.next() * immediateSafe.length)];
+    }
+
+    // 隣接マスに逃げ場が無ければ、数マス先までBFSで辿って安全なマスを探す
+    const maxDepth = 6;
+    for (let depth = 1; depth < maxDepth && frontier.length > 0; depth++) {
+      const found = [];
+      const nextFrontier = [];
+      for (const pos of frontier) {
+        for (const dir of DIRECTIONS) {
+          const resolved = stage.resolveMove(pos.face, pos.col, pos.row, dir.name);
+          if (!resolved) continue;
+          if (!stage.isWalkable(resolved.face, resolved.col, resolved.row, { canPassSoftBlock })) continue;
+          if (this._isBlockedByBomb(bombs, resolved.face, resolved.col, resolved.row)) continue;
+          const key = tileKey(resolved.face, resolved.col, resolved.row);
+          if (visited.has(key)) continue;
+          visited.add(key);
+          if (!dangerTiles.has(key)) {
+            found.push(pos.firstDir);
+          } else {
+            nextFrontier.push({ face: resolved.face, col: resolved.col, row: resolved.row, firstDir: pos.firstDir });
+          }
+        }
+      }
+      if (found.length > 0) {
+        return found[Math.floor(random.next() * found.length)];
+      }
+      frontier = nextFrontier;
+    }
+    return null; // 本当にどこにも逃げ場が無い(周囲を完全に囲まれている等)
   }
 
   /**

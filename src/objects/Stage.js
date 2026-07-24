@@ -125,6 +125,20 @@ export class Stage {
     return this.grid[row][col];
   }
 
+  /**
+   * 指定マスのブロック種別を強制的に上書きする。
+   * サイコロ6面ステージ(CubeStage)で、面の四隅(通常は外周としてHARD固定)を
+   * 壊せるブロックに開放し、面をまたぐ移動の経路として使えるようにする用途
+   * などで使用する。範囲外は何もしない。
+   */
+  setBlockType(col, row, type) {
+    if (!Collision.inBounds(col, row, this.cols, this.rows)) return;
+    this.grid[row][col] = type;
+    if (type !== BLOCK_TYPES.ITEM) {
+      this.itemTypeByTile.delete(tileKey(col, row));
+    }
+  }
+
   isWalkable(col, row, options = {}) {
     return Collision.isWalkable(this.grid, col, row, options);
   }
