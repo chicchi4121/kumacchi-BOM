@@ -131,8 +131,10 @@ export class Stage {
 
   /**
    * そのマスに爆弾を設置できるかどうか。
-   * 壁(HARD/SOFT/ITEM)は通り抜けられるが、壁の中に立っている間は
-   * 爆弾を設置できない（通り抜けられることを利用した安全地帯化を防ぐため）。
+   * 通常HARD/SOFT/ITEMのマスには（そもそも通り抜けアイテム無しでは）
+   * 移動できないため入る余地がないが、👻(GHOST)取得済みで壊せる壁
+   * (SOFT/ITEM)の中に入り込んでいる場合でも、その状態を利用した
+   * 安全地帯化を防ぐため爆弾は設置できないようにする。EMPTYのみ設置可。
    */
   canPlaceBombAt(col, row) {
     return this.getBlockType(col, row) === BLOCK_TYPES.EMPTY;

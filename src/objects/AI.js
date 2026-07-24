@@ -7,13 +7,15 @@
  * (AI_PROFILES)に基づいて実行する。
  * 「必殺技使用」はPhase3で必殺技システム本体が実装された後に対応する。
  *
- * NOTE: 壁(HARD/SOFT/ITEM)は通り抜けられる仕様のため、移動そのものは
- * 壁に妨げられない。それでもAIが壊せるブロックを積極的に爆破するのは、
- * (1) 爆風は壁で止まる/壊せるブロックに当たると止まるため、爆風を
+ * NOTE: 壊せない壁(HARD)は通り抜けできない。壊せる壁(SOFT/ITEM)は
+ * 👻(GHOST)取得済み(player.canPassSoftBlock)の場合のみ通り抜けできる。
+ * そのためAIは基本的に壊せるブロックを積極的に爆破して進路を切り開く
+ * 必要がある。理由は以下の通り:
+ * (1) GHOST未取得の間はSOFT/ITEMブロックが実際の障害物になるため、
+ *     移動ルートを確保するには破壊が必須
+ * (2) 爆風は壁で止まる/壊せるブロックに当たると止まるため、爆風を
  *     敵に届かせるには進路上のブロックを壊しておく価値がある
- * (2) ブロック破壊そのものがスコア(撃破数と並ぶ集計対象)になる
- * という理由からで、「通り抜けられるから壊さなくてもいい」とはならない
- * ようにしてある。
+ * (3) ブロック破壊そのものがスコア(撃破数と並ぶ集計対象)になる
  *
  * データ駆動設計（開発ルール6）: 難易度ごとの挙動差はAI_PROFILESの
  * パラメータ調整のみで表現し、ロジック本体は難易度に依存しないようにしてある。
@@ -120,7 +122,7 @@ export class AI {
     // --- 2. 撃破チャンス：直線上の敵に爆風が届き、設置後も逃げ場があるなら迷わず爆弾を置く ---
     if (canAct && nearestEnemy && random.next() < this.profile.killShotChance) {
       const canHit = this._canBlastReach(stage, here, nearestEnemy, player.blastRange);
-      if (canHit && this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles)) {
+      if (canHit && this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles, player.canPassSoftBlock)) {
         placeBomb(player);
         return;
       }
@@ -143,16 +145,16 @@ export class AI {
     }
 
     if (target) {
-      // 進路上に壊せるブロックがあるなら、通り抜けられるとはいえ積極的に爆破して
-      // 爆風が通る道・追跡ルートを切り開く（逃げ場がある時のみ）
+      // 進路上に壊せるブロックがあるなら積極的に爆破して、爆風が通る道・
+      // 追跡ルートを切り開く（GHOST未取得なら移動そのものに必須、逃げ場がある時のみ実行）
       if (canAct && this._hasAdjacentBreakableTowards(stage, here, target) && random.next() < this.profile.bombChance) {
-        if (this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles)) {
+        if (this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles, player.canPassSoftBlock)) {
           placeBomb(player);
           return;
         }
       }
 
-      const dir = this._chooseDirectionTowards(here, target, stage, bombs, dangerTiles, willMistake);
+      const dir = this._chooseDirectionTowards(here, target, stage, bombs, dangerTiles, willMistake, player.canPassSoftBlock);
       if (dir) {
         player.tryMove(dir, isBlockedByBomb);
         return;
@@ -161,13 +163,13 @@ export class AI {
 
     // --- 5. 目的地が無い場合は徘徊しつつ、隣接する壊せるブロックがあれば積極的に爆破する ---
     if (canAct && this._hasAnyAdjacentBreakable(stage, here) && random.next() < this.profile.bombChance) {
-      if (this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles)) {
+      if (this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles, player.canPassSoftBlock)) {
         placeBomb(player);
         return;
       }
     }
 
-    const wanderDir = this._chooseRandomWalkableDirection(here, stage, bombs, dangerTiles);
+    const wanderDir = this._chooseRandomWalkableDirection(here, stage, bombs, dangerTiles, player.canPassSoftBlock);
     if (wanderDir) {
       player.tryMove(wanderDir, isBlockedByBomb);
     }
@@ -183,7 +185,7 @@ export class AI {
     for (const dir of DIRECTIONS) {
       const col = player.col + dir.dCol;
       const row = player.row + dir.dRow;
-      if (!stage.isWalkable(col, row)) continue;
+      if (!stage.isWalkable(col, row, { canPassSoftBlock: player.canPassSoftBlock })) continue;
       if (this._isBlockedByBomb(bombs, col, row)) continue;
       if (dangerTiles.has(tileKey(col, row))) continue;
       candidates.push(dir.name);
@@ -193,9 +195,8 @@ export class AI {
 
   /**
    * 隣接している敵がいて、かつその敵の逃げ道が少ない場合にtrueを返す（閉じ込め戦術）。
-   * NOTE: 壁は通り抜けられる仕様のため、ここでの「逃げ道が塞がっている」は
-   * マップ範囲外か、他の爆弾で塞がれている場合のみを指す（壁自体は逃げ道を
-   * 塞がない）。
+   * NOTE: 壊せない壁(HARD)は逃げ道にならず、壊せる壁(SOFT/ITEM)は敵自身が
+   * GHOST(👻)取得済みの場合のみ逃げ道になる。
    */
   _findTrappableEnemy(player, players, stage, bombs) {
     const enemies = players.filter((p) => p.isAlive && p !== player);
@@ -207,7 +208,10 @@ export class AI {
       for (const dir of DIRECTIONS) {
         const col = enemy.col + dir.dCol;
         const row = enemy.row + dir.dRow;
-        if (stage.isWalkable(col, row) && !this._isBlockedByBomb(bombs, col, row)) {
+        if (
+          stage.isWalkable(col, row, { canPassSoftBlock: enemy.canPassSoftBlock }) &&
+          !this._isBlockedByBomb(bombs, col, row)
+        ) {
           openEscapeRoutes++;
         }
       }
@@ -254,22 +258,47 @@ export class AI {
   }
 
   /**
-   * `from`に今まさに爆弾を置いたとして、その爆風(dry-run)にも既存の危険地帯にも
-   * 他の爆弾にも当たらない隣接マスが1つでもあるかを確認する（自爆防止の簡易チェック）。
+   * `from`に今まさに爆弾を置いたとして、爆発(約3秒後)までにその爆風(dry-run)にも
+   * 既存の危険地帯にも他の爆弾にも当たらないマスへ辿り着けるかを確認する
+   * （自爆防止チェック）。
+   *
+   * NOTE: 壊せない壁(HARD)は通行不可・壊せる壁(SOFT/ITEM)は👻取得済みのみ通行可、
+   * という仕様のもとでは、爆弾位置に隣接するマス(距離1)は「爆風が届く方向で
+   * かつ間に何も無い」ため通行可能である限りほぼ確実に爆風範囲に含まれてしまう
+   * （十字型の爆風は隣接4マスを必ず含むため）。そのため隣接マスだけを見る
+   * 1マス先読みでは常に「逃げ場なし」と誤判定してしまう。
+   * 実際のボンバーマンでは、爆風が十字型にしか伸びないことを利用して、
+   * 角を曲がって斜め方向へ回り込むことで爆風範囲の外に逃げられる
+   * （detonateまで数秒あるため、複数マス移動する猶予がある）。
+   * これを反映するため、隣接マスだけでなく数マス先までの幅優先探索(BFS)で
+   * 「爆風にも危険地帯にも入らないマスへ到達できるか」を判定する。
    */
-  _hasEscapeRoute(stage, bombs, from, range, dangerTiles) {
+  _hasEscapeRoute(stage, bombs, from, range, dangerTiles, canPassSoftBlock = false) {
     const { tiles } = Explosion.computeBlastTiles(stage, from.col, from.row, range, { dryRun: true });
     const futureBlast = new Set(tiles.map((t) => tileKey(t.col, t.row)));
 
-    for (const dir of DIRECTIONS) {
-      const col = from.col + dir.dCol;
-      const row = from.row + dir.dRow;
-      const key = tileKey(col, row);
-      if (!stage.isWalkable(col, row)) continue;
-      if (futureBlast.has(key)) continue;
-      if (dangerTiles.has(key)) continue;
-      if (this._isBlockedByBomb(bombs, col, row)) continue;
-      return true;
+    const maxDepth = range + 2; // 爆風範囲+αだけ先まで辿れれば、角を曲がって逃げ切れるはず
+    const visited = new Set([tileKey(from.col, from.row)]);
+    let frontier = [{ col: from.col, row: from.row }];
+
+    for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
+      const nextFrontier = [];
+      for (const pos of frontier) {
+        for (const dir of DIRECTIONS) {
+          const col = pos.col + dir.dCol;
+          const row = pos.row + dir.dRow;
+          const key = tileKey(col, row);
+          if (visited.has(key)) continue;
+          if (!stage.isWalkable(col, row, { canPassSoftBlock })) continue;
+          if (this._isBlockedByBomb(bombs, col, row)) continue;
+          visited.add(key);
+          if (!futureBlast.has(key) && !dangerTiles.has(key)) {
+            return true;
+          }
+          nextFrontier.push({ col, row });
+        }
+      }
+      frontier = nextFrontier;
     }
     return false;
   }
@@ -300,7 +329,7 @@ export class AI {
    * 目標に近づく方向を選ぶ。危険地帯は基本的に避けるが、ミス発生時(willMistake)は
    * 危険を考慮せず最短方向へ進んでしまう（難易度が低いほど発生しやすい）。
    */
-  _chooseDirectionTowards(here, target, stage, bombs, dangerTiles, willMistake) {
+  _chooseDirectionTowards(here, target, stage, bombs, dangerTiles, willMistake, canPassSoftBlock = false) {
     const dCol = target.col - here.col;
     const dRow = target.row - here.row;
 
@@ -313,7 +342,7 @@ export class AI {
       const dir = DIRECTIONS.find((d) => d.name === dirName);
       const col = here.col + dir.dCol;
       const row = here.row + dir.dRow;
-      if (!stage.isWalkable(col, row)) continue;
+      if (!stage.isWalkable(col, row, { canPassSoftBlock })) continue;
       if (this._isBlockedByBomb(bombs, col, row)) continue;
       if (!willMistake && dangerTiles.has(tileKey(col, row))) continue;
       return dirName;
@@ -321,12 +350,12 @@ export class AI {
     return null;
   }
 
-  _chooseRandomWalkableDirection(here, stage, bombs, dangerTiles) {
+  _chooseRandomWalkableDirection(here, stage, bombs, dangerTiles, canPassSoftBlock = false) {
     const candidates = [];
     for (const dir of DIRECTIONS) {
       const col = here.col + dir.dCol;
       const row = here.row + dir.dRow;
-      if (!stage.isWalkable(col, row)) continue;
+      if (!stage.isWalkable(col, row, { canPassSoftBlock })) continue;
       if (this._isBlockedByBomb(bombs, col, row)) continue;
       if (dangerTiles.has(tileKey(col, row))) continue;
       candidates.push(dir.name);

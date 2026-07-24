@@ -97,7 +97,7 @@ for (let trial = 0; trial < 20; trial++) {
   if (!startOk) fail++, console.log('  NG  (試行', trial, ')開始地点が塞がれています');
 }
 
-console.log('\n== 2b. 壁は通り抜け可能・壁の上には爆弾を設置できない ==');
+console.log('\n== 2b. 壊せない壁は通行不可・壊せる壁は通り抜けアイテム取得後のみ通行可 ==');
 {
   const stage = new Stage(15, 11);
   stage.generate(2);
@@ -106,7 +106,7 @@ console.log('\n== 2b. 壁は通り抜け可能・壁の上には爆弾を設置�
   const pillarCol = 2;
   const pillarRow = 2;
   check('内部の柱はHARDブロックである', stage.getBlockType(pillarCol, pillarRow) === BLOCK_TYPES.HARD);
-  check('HARDブロックの上でも通行可能(壁は通り抜けられる)', stage.isWalkable(pillarCol, pillarRow) === true);
+  check('HARDブロックは通行不可(通り抜けアイテムがあっても不可)', stage.isWalkable(pillarCol, pillarRow, { canPassSoftBlock: true }) === false);
   check('HARDブロックの上には爆弾を設置できない', stage.canPlaceBombAt(pillarCol, pillarRow) === false);
 
   // SOFT/ITEMブロックを探して同様に検証する
@@ -115,8 +115,10 @@ console.log('\n== 2b. 壁は通り抜け可能・壁の上には爆弾を設置�
     for (let col = 0; col < stage.cols && !foundBreakable; col++) {
       const type = stage.getBlockType(col, row);
       if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) {
-        check('壊せるブロックの上でも通行可能(壁は通り抜けられる)', stage.isWalkable(col, row) === true);
-        check('壊せるブロックの上には爆弾を設置できない', stage.canPlaceBombAt(col, row) === false);
+        check('壊せるブロックは通り抜けアイテム未取得だと通行不可', stage.isWalkable(col, row) === false);
+        check('壊せるブロックは通り抜けアイテム未取得だと通行不可(明示的にfalse指定)', stage.isWalkable(col, row, { canPassSoftBlock: false }) === false);
+        check('壊せるブロックは通り抜けアイテム取得済みなら通行可', stage.isWalkable(col, row, { canPassSoftBlock: true }) === true);
+        check('壊せるブロックの上には爆弾を設置できない(取得済みでも)', stage.canPlaceBombAt(col, row) === false);
         foundBreakable = true;
       }
     }
@@ -126,6 +128,7 @@ console.log('\n== 2b. 壁は通り抜け可能・壁の上には爆弾を設置�
   // EMPTYマスには通常通り爆弾を設置できる
   const [startPos] = stage.getStartPositions();
   check('EMPTYマス(開始地点)には爆弾を設置できる', stage.canPlaceBombAt(startPos.col, startPos.row) === true);
+  check('EMPTYマスは誰でも通行可能', stage.isWalkable(startPos.col, startPos.row) === true);
 
   // マップ範囲外は通行不可
   check('マップ範囲外は通行不可', stage.isWalkable(-1, 0) === false);

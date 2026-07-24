@@ -186,9 +186,14 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
         if (!grid[row] || grid[row][col] === undefined) return BLOCK_TYPES.HARD;
         return grid[row][col];
       },
-      // Phase3の仕様変更: 壁は通り抜けられるため、マップ範囲内なら常にtrue
-      isWalkable(col, row) {
-        return !!(grid[row] && grid[row][col] !== undefined);
+      // 壊せない壁(HARD)は常に通行不可。壊せる壁(SOFT/ITEM)は
+      // canPassSoftBlockがtrueの場合のみ通行可。EMPTYは常に通行可。
+      isWalkable(col, row, options = {}) {
+        if (!grid[row] || grid[row][col] === undefined) return false;
+        const type = grid[row][col];
+        if (type === BLOCK_TYPES.HARD) return false;
+        if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) return !!options.canPassSoftBlock;
+        return true;
       },
       breakBlock() {
         throw new Error('dryRun中はbreakBlockが呼ばれてはいけない');
@@ -214,32 +219,37 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
     check('間に壊せるブロックがあると届かない（爆風はそこで止まるため）', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 4, row: 0 }, 5) === false);
   }
 
-  // 6-2. _hasEscapeRoute: 隣に壁(HARD)があればそこへ逃げられる。壁は通り抜けられるが爆風は届かないため安全地帯になる
+  // 6-2. _hasEscapeRoute: 十字型の爆風は隣接4マスを必ず含むため、1マス先読みでは
+  // 常に「逃げ場なし」になってしまう。角を曲がって斜めに回り込めば爆風の外に
+  // 出られるはずなので、数マス先までのBFSで正しく逃げ道を見つけられることを確認する。
   {
+    // 4方向すべて開けている交差点: 隣接4マスは全てrange1の爆風に含まれるが、
+    // そこからさらに1マス角を曲がれば(斜め方向)爆風の外に出られる
     const rows = [
       [E, E, E],
-      [H, E, E],
+      [E, E, E],
       [E, E, E],
     ];
     const stage = makeMockStage(rows);
     const dangerTiles = new Set();
     check(
-      '隣接する壁の陰は自分の爆風が届かないため逃げ道になる',
+      '開けた交差点では角を曲がって斜めに回り込むことで自分の爆風から逃げ切れる',
       ai._hasEscapeRoute(stage, [], { col: 1, row: 1 }, 1, dangerTiles) === true
     );
   }
   {
-    // 4方向すべて開けている（壁も無い）交差点では、range1の爆風が隣接4マス全てに届くため逃げ場がない
+    // 行き止まりの一直線の通路(左右をHARDで塞がれている)では、爆風の直線上から
+    // 外れる曲がり角が存在しないため、逃げ場が無い
     const rows = [
-      [E, E, E],
-      [E, E, E],
-      [E, E, E],
+      [H, H, H, H, H],
+      [H, E, E, E, H],
+      [H, H, H, H, H],
     ];
     const stage = makeMockStage(rows);
     const dangerTiles = new Set();
     check(
-      '周囲が完全に開けた交差点では自分の爆風から逃げ切れない',
-      ai._hasEscapeRoute(stage, [], { col: 1, row: 1 }, 1, dangerTiles) === false
+      '曲がり角の無い行き止まりの通路では自分の爆風から逃げ切れない',
+      ai._hasEscapeRoute(stage, [], { col: 2, row: 1 }, 1, dangerTiles) === false
     );
   }
 

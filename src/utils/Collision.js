@@ -6,7 +6,7 @@
  * 座標変換・移動可否判定・爆風到達判定を提供する。
  * ------------------------------------------------------------
  */
-import { TILE_SIZE } from '../constants/GameConstants.js';
+import { TILE_SIZE, BLOCK_TYPES } from '../constants/GameConstants.js';
 
 export class Collision {
   /** ピクセル座標 -> グリッド座標 */
@@ -33,20 +33,26 @@ export class Collision {
   /**
    * プレイヤーがそのマスへ移動できるかを判定する。
    *
-   * 仕様変更: 壁(HARD/SOFT/ITEMいずれも)は「見た目・爆風は遮るが、
-   * プレイヤーの移動は妨げない（通り抜けられる壁）」という設計にした。
-   * そのため実際にはマップ範囲内かどうかのみを判定する。
-   * ブロック種別による移動制限が復活しても困らないよう、シグネチャ
-   * (grid, col, row, options)自体は維持している。
+   * 仕様（フィードバック反映版）:
+   * - 壊せない壁(HARD)は通り抜けできない（常に移動不可）。
+   * - 壊せる壁(SOFT/ITEM)は、通り抜けアイテム(👻 GHOST)を取得済みの
+   *   プレイヤー(options.canPassSoftBlock === true)に限り通り抜けできる。
+   *   未取得のプレイヤーにとっては壊す/迂回するまで移動不可。
+   * - 空白(EMPTY)は常に移動可能。
    *
    * @param {Array<Array<string>>} grid - Stage.jsが保持するブロック種別の2次元配列
    * @param {number} col
    * @param {number} row
-   * @param {object} options - 現状未使用（将来の拡張用に維持）
+   * @param {object} options - { canPassSoftBlock?: boolean }
    */
   static isWalkable(grid, col, row, options = {}) {
     if (!grid[row] || grid[row][col] === undefined) return false;
-    return true;
+    const type = grid[row][col];
+    if (type === BLOCK_TYPES.HARD) return false;
+    if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) {
+      return !!options.canPassSoftBlock;
+    }
+    return true; // EMPTY
   }
 
   /** 2つのグリッド座標が一致するか（爆風とプレイヤー等の当たり判定に使用） */

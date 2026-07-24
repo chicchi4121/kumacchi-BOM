@@ -133,12 +133,26 @@ export class VRMSystem {
     camera.lookAt(center);
 
     renderer.render(scene, camera);
-    const canvas = renderer.domElement;
+    const glCanvas = renderer.domElement;
+
+    // 重要: glCanvas(renderer.domElement)は'webgl'コンテキストが紐付いた
+    // canvasであり、一度webglコンテキストを取得したcanvasは二度と
+    // getContext('2d')を取得できない（nullが返る）。Phaser.Textures.addCanvas()
+    // は内部で2Dコンテキスト経由のピクセル読み取り(getImageData等)を行うため、
+    // webgl canvasをそのまま渡すと「Cannot read properties of null
+    // (reading 'getImageData')」で失敗する。
+    // そのため、描画結果を独立した2D canvasへdrawImageでコピーしてから返す。
+    const canvas2d = document.createElement('canvas');
+    canvas2d.width = size;
+    canvas2d.height = size;
+    const ctx2d = canvas2d.getContext('2d');
+    ctx2d.drawImage(glCanvas, 0, 0, size, size);
+
     renderer.dispose();
 
     console.log('[VRMSystem] スナップショットの描画が完了しました。', { size, boxDimensions: dimensions });
     onProgress('done');
-    return canvas;
+    return canvas2d;
   }
 }
 
