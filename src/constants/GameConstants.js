@@ -71,6 +71,16 @@ export const AI_DIFFICULTY = Object.freeze({
 });
 export const MAX_AI_PLAYERS = 5;
 
+// --- 勝敗判定・リザルト設定 -------------------------------------------------
+export const EXP_PER_KILL = 100; // 撃破1件あたりの獲得経験値
+export const EXP_PER_BOMB_EXPLODED = 10; // 爆破1件あたりの獲得経験値
+export const EXP_PER_ITEM_COLLECTED = 20; // アイテム取得1件あたりの獲得経験値
+export const EXP_WIN_BONUS = 300; // 勝利ボーナス
+
+// --- 試合開始前カウントダウン設定 ------------------------------------------
+export const COUNTDOWN_STEPS = ['3', '2', '1', 'START'];
+export const COUNTDOWN_STEP_MS = 800;
+
 // --- 入力キー設定 ------------------------------------------------------
 export const KEYS = Object.freeze({
   UP: 'UP',

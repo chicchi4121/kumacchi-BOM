@@ -61,6 +61,13 @@ export class Player {
     this.isMoving = false;
     this.facing = 'down';
 
+    // --- 集計データ（リザルト画面・勝敗判定用） ---
+    this.stats = {
+      kills: 0, // 撃破数
+      bombsExploded: 0, // 爆破数
+      itemsCollected: 0, // 取得アイテム数
+    };
+
     this._createSprite();
   }
 

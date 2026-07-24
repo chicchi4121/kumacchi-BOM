@@ -28,9 +28,13 @@ export class Explosion {
    * @param {number} originCol
    * @param {number} originRow
    * @param {number} range - 爆風の届く最大マス数
-   * @returns {{ tiles: Array<{col:number,row:number}>, broken: Array<{col:number,row:number,spawnItem:boolean}> }}
+   * @param {object} options - { dryRun: boolean } trueの場合ブロックを実際には
+   *   破壊せず範囲計算のみ行う（AIの危険地帯予測など、盤面を変えずに
+   *   「もし爆発したら」を調べたい場合に使用する）。
+   * @returns {{ tiles: Array<{col:number,row:number}>, broken: Array<{col:number,row:number,spawnItem:boolean,itemType:?string}> }}
    */
-  static computeBlastTiles(stage, originCol, originRow, range) {
+  static computeBlastTiles(stage, originCol, originRow, range, options = {}) {
+    const { dryRun = false } = options;
     const tiles = [{ col: originCol, row: originRow }];
     const broken = [];
 
@@ -47,9 +51,14 @@ export class Explosion {
         tiles.push({ col, row });
 
         if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) {
-          const result = stage.breakBlock(col, row);
-          if (result.destroyed) {
-            broken.push({ col, row, spawnItem: result.spawnItem });
+          if (dryRun) {
+            // 予測のみ：盤面は変更せずここで停止したことにする
+            broken.push({ col, row, spawnItem: type === BLOCK_TYPES.ITEM, itemType: null });
+          } else {
+            const result = stage.breakBlock(col, row);
+            if (result.destroyed) {
+              broken.push({ col, row, spawnItem: result.spawnItem, itemType: result.itemType ?? null });
+            }
           }
           break; // ブロックを破壊したらそこで爆風は止まる
         }

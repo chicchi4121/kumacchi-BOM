@@ -17,9 +17,17 @@ import {
   ITEM_BLOCK_RATE,
   SAFE_ZONE_RADIUS,
   MAX_PLAYERS,
+  ITEM_TYPES,
 } from '../constants/GameConstants.js';
 import { Collision } from '../utils/Collision.js';
 import { random } from '../utils/Random.js';
+
+// 出現しうるアイテム種別一覧（データ駆動：ここに追加するだけで出現候補が増える）
+const SPAWNABLE_ITEM_TYPES = Object.values(ITEM_TYPES);
+
+function tileKey(col, row) {
+  return `${col},${row}`;
+}
 
 // プレイヤーの初期出現候補地点（四隅＋上下辺の中央）。
 // 座標は「内側1マス」を基準にしており、外周は必ずHARDブロックで囲む。
@@ -45,6 +53,7 @@ export class Stage {
     this.rows = rows;
     this.grid = [];
     this.startPositions = [];
+    this.itemTypeByTile = new Map(); // "col,row" -> ITEM_TYPES.* （ITEMブロックの中身を事前決定しておく）
   }
 
   /**
@@ -54,11 +63,16 @@ export class Stage {
   generate(playerCount = 1) {
     const { cols, rows } = this;
     const grid = [];
+    this.itemTypeByTile = new Map();
 
     for (let row = 0; row < rows; row++) {
       const line = [];
       for (let col = 0; col < cols; col++) {
-        line.push(this._decideBlockType(col, row, cols, rows));
+        const type = this._decideBlockType(col, row, cols, rows);
+        line.push(type);
+        if (type === BLOCK_TYPES.ITEM) {
+          this.itemTypeByTile.set(tileKey(col, row), random.pick(SPAWNABLE_ITEM_TYPES));
+        }
       }
       grid.push(line);
     }
@@ -101,6 +115,7 @@ export class Stage {
         const isPillar = c % 2 === 0 && r % 2 === 0;
         if (isBorder || isPillar) continue;
         this.grid[r][c] = BLOCK_TYPES.EMPTY;
+        this.itemTypeByTile.delete(tileKey(c, r));
       }
     }
   }
@@ -116,16 +131,18 @@ export class Stage {
 
   /**
    * ブロックを破壊する。
-   * @returns {{ destroyed: boolean, spawnItem: boolean }}
+   * @returns {{ destroyed: boolean, spawnItem: boolean, itemType: ?string }}
    */
   breakBlock(col, row) {
     const type = this.getBlockType(col, row);
     if (type !== BLOCK_TYPES.SOFT && type !== BLOCK_TYPES.ITEM) {
-      return { destroyed: false, spawnItem: false };
+      return { destroyed: false, spawnItem: false, itemType: null };
     }
     const spawnItem = type === BLOCK_TYPES.ITEM;
+    const itemType = spawnItem ? this.itemTypeByTile.get(tileKey(col, row)) ?? null : null;
     this.grid[row][col] = BLOCK_TYPES.EMPTY;
-    return { destroyed: true, spawnItem };
+    this.itemTypeByTile.delete(tileKey(col, row));
+    return { destroyed: true, spawnItem, itemType };
   }
 
   getStartPositions() {

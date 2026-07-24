@@ -6,6 +6,7 @@
  * ------------------------------------------------------------
  */
 import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
+import { soundSystem } from '../systems/SoundSystem.js';
 
 export class PauseScene extends Phaser.Scene {
   constructor() {
@@ -32,7 +33,10 @@ export class PauseScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
-    resumeText.on('pointerdown', () => this._resume());
+    resumeText.on('pointerdown', () => {
+      soundSystem.playSE('button');
+      this._resume();
+    });
 
     const titleText = this.add
       .text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 70, 'タイトルに戻る', {
@@ -43,7 +47,10 @@ export class PauseScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
-    titleText.on('pointerdown', () => this._backToTitle());
+    titleText.on('pointerdown', () => {
+      soundSystem.playSE('button');
+      this._backToTitle();
+    });
 
     this.input.keyboard.once('keydown-ESC', () => this._resume());
   }
@@ -54,6 +61,7 @@ export class PauseScene extends Phaser.Scene {
   }
 
   _backToTitle() {
+    soundSystem.stopBGM();
     this.scene.stop(SCENE_KEYS.GAME);
     this.scene.stop();
     this.scene.start(SCENE_KEYS.TITLE);

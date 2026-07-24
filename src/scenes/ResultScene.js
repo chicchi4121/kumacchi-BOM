@@ -2,12 +2,22 @@
  * ResultScene.js
  * ------------------------------------------------------------
  * 対戦終了後のリザルト画面。
- * 順位・撃破数・爆破数・取得アイテム数・獲得経験値・ランキング更新の
- * 表示を行う予定だが、撃破数/爆破数/アイテム数/経験値の集計ロジックは
- * Phase2で実装するため、Phase1では順位（勝者）のみ確定表示する。
+ * 順位・撃破数・爆破数・取得アイテム数・獲得経験値を実データで表示する。
+ * 経験値計算式はEXP_PER_*定数（GameConstants.js）で一元管理している。
+ *
+ * ランキング更新（Supabase送信）はPhase4実装予定のため引き続き導線のみ。
  * ------------------------------------------------------------
  */
-import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
+import {
+  SCENE_KEYS,
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  EXP_PER_KILL,
+  EXP_PER_BOMB_EXPLODED,
+  EXP_PER_ITEM_COLLECTED,
+  EXP_WIN_BONUS,
+} from '../constants/GameConstants.js';
+import { soundSystem } from '../systems/SoundSystem.js';
 
 export class ResultScene extends Phaser.Scene {
   constructor() {
@@ -15,35 +25,36 @@ export class ResultScene extends Phaser.Scene {
   }
 
   init(data) {
-    this.winner = data?.winner ?? null;
+    this.winnerPlayerId = data?.winner?.playerId ?? null;
+    this.humanPlayerId = data?.humanPlayerId ?? null;
+    this.players = data?.players ?? [];
+    this.finalRanks = data?.finalRanks ?? {};
   }
 
   create() {
     const centerX = SCREEN_WIDTH / 2;
+    const isHumanWinner = this.winnerPlayerId !== null && this.winnerPlayerId === this.humanPlayerId;
+    soundSystem.playSE(this.players.length > 0 ? (isHumanWinner ? 'victory' : 'defeat') : 'button');
 
-    this.add.text(centerX, 80, 'リザルト', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    this.add.text(centerX, 50, 'リザルト', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
 
-    const winnerLabel = this.winner ? `勝者: プレイヤー${this.winner.playerId}` : '引き分け';
-    this.add.text(centerX, 150, winnerLabel, { fontSize: '24px', color: '#ffe066' }).setOrigin(0.5);
+    const winnerLabel = this.winnerPlayerId
+      ? `勝者: プレイヤー${this.winnerPlayerId}${isHumanWinner ? '（あなた）' : ''}`
+      : '引き分け';
+    this.add.text(centerX, 95, winnerLabel, { fontSize: '22px', color: '#ffe066' }).setOrigin(0.5);
 
-    // TODO(Phase2): 撃破数・爆破数・取得アイテム数・獲得経験値の集計を表示する。
-    this.add
-      .text(centerX, 210, '撃破数 / 爆破数 / 取得アイテム数 / 獲得経験値（Phase2実装予定）', {
-        fontSize: '16px',
-        color: '#aaaaaa',
-      })
-      .setOrigin(0.5);
+    this._renderTable(centerX, 140);
 
     // TODO(Phase4): RankingSystem経由でSupabaseにランキング反映する。
     this.add
-      .text(centerX, 250, 'ランキング更新（Phase4実装予定）', {
-        fontSize: '16px',
-        color: '#aaaaaa',
+      .text(centerX, SCREEN_HEIGHT - 90, 'ランキング更新（Phase4実装予定）', {
+        fontSize: '14px',
+        color: '#888888',
       })
       .setOrigin(0.5);
 
     const backText = this.add
-      .text(centerX, 330, 'タイトルに戻る', {
+      .text(centerX, SCREEN_HEIGHT - 40, 'タイトルに戻る', {
         fontSize: '20px',
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
@@ -51,6 +62,52 @@ export class ResultScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
-    backText.on('pointerdown', () => this.scene.start(SCENE_KEYS.TITLE));
+    backText.on('pointerdown', () => {
+      soundSystem.playSE('button');
+      soundSystem.stopBGM();
+      this.scene.start(SCENE_KEYS.TITLE);
+    });
+  }
+
+  _calcExp(stats, isWinner) {
+    return (
+      stats.kills * EXP_PER_KILL +
+      stats.bombsExploded * EXP_PER_BOMB_EXPLODED +
+      stats.itemsCollected * EXP_PER_ITEM_COLLECTED +
+      (isWinner ? EXP_WIN_BONUS : 0)
+    );
+  }
+
+  _renderTable(centerX, startY) {
+    const rows = this.players
+      .map((p) => ({
+        ...p,
+        rank: this.finalRanks[p.playerId] ?? this.finalRanks[String(p.playerId)] ?? '-',
+        exp: this._calcExp(p.stats, p.playerId === this.winnerPlayerId),
+      }))
+      .sort((a, b) => (a.rank === '-' ? 99 : a.rank) - (b.rank === '-' ? 99 : b.rank));
+
+    const header = ['順位', 'プレイヤー', '撃破', '爆破', 'アイテム', '経験値'];
+    const colX = [-260, -190, -60, 10, 80, 170];
+
+    header.forEach((label, i) => {
+      this.add
+        .text(centerX + colX[i], startY, label, { fontSize: '14px', color: '#aaaaaa' })
+        .setOrigin(0, 0.5);
+    });
+
+    rows.forEach((row, i) => {
+      const y = startY + 28 + i * 26;
+      const isHuman = row.playerId === this.humanPlayerId;
+      const nameLabel = `プレイヤー${row.playerId}${row.isAI ? '(AI)' : ''}${isHuman ? ' ★' : ''}`;
+      const color = isHuman ? '#ffe066' : '#ffffff';
+      const values = [`${row.rank}位`, nameLabel, row.stats.kills, row.stats.bombsExploded, row.stats.itemsCollected, row.exp];
+
+      values.forEach((value, colIdx) => {
+        this.add
+          .text(centerX + colX[colIdx], y, String(value), { fontSize: '15px', color })
+          .setOrigin(0, 0.5);
+      });
+    });
   }
 }
