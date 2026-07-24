@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>くまっちボム！</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Hiragino Sans', 'Yu Gothic', sans-serif;
+    }
+    #game-container {
+      line-height: 0;
+    }
+  </style>
+  <!-- Phaser 3 (CDN読み込み。ビルドステップなしで軽量に動作させるため) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game-container"></div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
