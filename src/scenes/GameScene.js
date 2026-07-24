@@ -94,17 +94,50 @@ export class GameScene extends Phaser.Scene {
    * なければ同梱のデフォルトVRM(assets/vrm/kumacchi.vrm)を使用する。
    * 読込・描画に失敗した場合は何もせず、デフォルトの色付き四角のままにする
    * （開発ルール8: VRM対応の有無がゲームロジックに影響しないこと）。
+   *
+   * 進行状況・失敗時のエラーは画面右上に小さく表示する（ブラウザの
+   * 開発者コンソールを開かなくても状態がわかるようにするため）。
    */
   async _loadHumanVrmAppearance() {
+    const statusText = this.add
+      .text(GRID_COLS * TILE_SIZE - 10, 10, 'VRM読み込み中...', {
+        fontSize: '13px',
+        color: '#88ddaa',
+        backgroundColor: '#000000aa',
+        padding: { x: 6, y: 3 },
+      })
+      .setOrigin(1, 0)
+      .setDepth(DEPTH.UI);
+
+    const setStatus = (label, color) => {
+      if (!this._sceneActive) return;
+      statusText.setText(label);
+      statusText.setColor(color);
+    };
+
     try {
       let arrayBuffer = vrmSystem.customArrayBuffer;
       if (!arrayBuffer) {
+        console.log(`[GameScene] デフォルトVRM(${DEFAULT_VRM_PATH})を読み込みます。`);
         const response = await fetch(DEFAULT_VRM_PATH);
-        if (!response.ok) return;
+        if (!response.ok) {
+          setStatus(`VRM読み込み失敗 (HTTP ${response.status})`, '#ff8888');
+          return;
+        }
         arrayBuffer = await response.arrayBuffer();
+      } else {
+        console.log(`[GameScene] アップロード済みVRM(${vrmSystem.customFileName})を使用します。`);
       }
 
-      const canvas = await vrmSystem.renderSnapshot(arrayBuffer, 128);
+      const canvas = await vrmSystem.renderSnapshot(arrayBuffer, 128, (stage) => {
+        const labels = {
+          'loading-modules': 'VRM: ライブラリ読込中...',
+          parsing: 'VRM: 解析中...',
+          rendering: 'VRM: 描画中...',
+          done: 'VRM: 読み込み完了',
+        };
+        setStatus(labels[stage] ?? 'VRM読み込み中...', '#88ddaa');
+      });
       if (!this._sceneActive || !this.humanPlayer?.isAlive) return;
 
       const textureKey = 'vrm_snapshot_player1';
@@ -115,8 +148,12 @@ export class GameScene extends Phaser.Scene {
       const image = this.add.image(x, y, textureKey);
       image.setDisplaySize(TILE_SIZE - 6, TILE_SIZE - 6);
       this.humanPlayer.setDisplayObject(image);
+
+      setStatus('VRM: 表示中', '#88ddaa');
+      this.time.delayedCall(2000, () => statusText?.destroy());
     } catch (e) {
-      console.warn('[GameScene] VRMの読み込みに失敗したため、デフォルト表示のままにします。', e);
+      console.error('[GameScene] VRMの読み込みに失敗したため、デフォルト表示のままにします。', e);
+      setStatus(`VRM読み込み失敗: ${e.message ?? e}`, '#ff8888');
     }
   }
 
@@ -215,6 +252,8 @@ export class GameScene extends Phaser.Scene {
     if (!player || !player.isAlive) return;
     if (!player.canPlaceBomb()) return;
     if (this._isTileOccupiedByBomb(player.col, player.row)) return;
+    // 壁(通り抜けられる壁)の中に立っている間は爆弾を設置できない
+    if (!this.stage.canPlaceBombAt(player.col, player.row)) return;
 
     const bomb = new Bomb(this, player.col, player.row, {
       ownerId: player.playerId,

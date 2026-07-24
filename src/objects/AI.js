@@ -2,41 +2,55 @@
  * AI.js
  * ------------------------------------------------------------
  * AI対戦プレイヤーの思考ルーチン。
- * 「爆弾回避」「アイテム取得」「プレイヤー追跡」「閉じ込め戦術」を
- * 難易度別のパラメータ(AI_PROFILES)に基づいて実行する。
+ * 「爆弾回避」「アイテム取得」「プレイヤー追跡」「積極的なブロック破壊」
+ * 「撃破チャンスの活用」「閉じ込め戦術」を難易度別のパラメータ
+ * (AI_PROFILES)に基づいて実行する。
  * 「必殺技使用」はPhase3で必殺技システム本体が実装された後に対応する。
+ *
+ * NOTE: 壁(HARD/SOFT/ITEM)は通り抜けられる仕様のため、移動そのものは
+ * 壁に妨げられない。それでもAIが壊せるブロックを積極的に爆破するのは、
+ * (1) 爆風は壁で止まる/壊せるブロックに当たると止まるため、爆風を
+ *     敵に届かせるには進路上のブロックを壊しておく価値がある
+ * (2) ブロック破壊そのものがスコア(撃破数と並ぶ集計対象)になる
+ * という理由からで、「通り抜けられるから壊さなくてもいい」とはならない
+ * ようにしてある。
  *
  * データ駆動設計（開発ルール6）: 難易度ごとの挙動差はAI_PROFILESの
  * パラメータ調整のみで表現し、ロジック本体は難易度に依存しないようにしてある。
  * ------------------------------------------------------------
  */
-import { AI_DIFFICULTY } from '../constants/GameConstants.js';
+import { AI_DIFFICULTY, BLOCK_TYPES } from '../constants/GameConstants.js';
 import { random } from '../utils/Random.js';
+import { Explosion } from './Explosion.js';
 
 // 難易度ごとの行動パラメータ（データ駆動）
 const AI_PROFILES = Object.freeze({
   [AI_DIFFICULTY.EASY]: {
     decisionIntervalMs: 500, // 判断の間隔（長いほど反応が遅い）
     mistakeChance: 0.35, // 危険地帯にいても回避に失敗する確率
-    bombChance: 0.15, // ブロック破壊/追跡中に爆弾を置く確率
-    chaseChance: 0.3, // プレイヤーを追跡する確率（それ以外は徘徊）
+    bombChance: 0.35, // ブロック破壊(徘徊/進路上)を試みる確率
+    killShotChance: 0.5, // 撃破チャンスを実行に移す確率
+    chaseChance: 0.3, // プレイヤーを追跡する確率（それ以外は徘徊/アイテム優先）
   },
   [AI_DIFFICULTY.NORMAL]: {
     decisionIntervalMs: 350,
     mistakeChance: 0.18,
-    bombChance: 0.28,
+    bombChance: 0.55,
+    killShotChance: 0.7,
     chaseChance: 0.55,
   },
   [AI_DIFFICULTY.HARD]: {
     decisionIntervalMs: 220,
     mistakeChance: 0.07,
-    bombChance: 0.4,
+    bombChance: 0.7,
+    killShotChance: 0.85,
     chaseChance: 0.75,
   },
   [AI_DIFFICULTY.EXPERT]: {
     decisionIntervalMs: 120,
     mistakeChance: 0.02,
-    bombChance: 0.55,
+    bombChance: 0.85,
+    killShotChance: 0.97,
     chaseChance: 0.9,
   },
 });
@@ -85,6 +99,7 @@ export class AI {
 
     const { stage, bombs, players, items, dangerTiles, placeBomb } = worldState;
     const here = { col: player.col, row: player.row };
+    const isBlockedByBomb = (c, r) => this._isBlockedByBomb(bombs, c, r);
 
     // --- 1. 爆弾回避：自分がいるマスが危険地帯なら安全なマスへ逃げる ---
     const inDanger = dangerTiles.has(tileKey(here.col, here.row));
@@ -93,26 +108,33 @@ export class AI {
     if (inDanger && !willMistake) {
       const fleeDir = this._findSafeDirection(player, stage, bombs, dangerTiles);
       if (fleeDir) {
-        player.tryMove(fleeDir, (c, r) => this._isBlockedByBomb(bombs, c, r));
+        player.tryMove(fleeDir, isBlockedByBomb);
         return;
       }
     }
 
-    // --- 2. 閉じ込め戦術：隣接する敵の逃げ道が少ない場合は爆弾で塞ぐ ---
-    const adjacentTrappedEnemy = this._findTrappableEnemy(player, players, stage, bombs);
-    if (adjacentTrappedEnemy && player.canPlaceBomb() && !inDanger) {
+    const canAct = player.canPlaceBomb() && !inDanger;
+    const enemies = players.filter((p) => p.isAlive && p !== player);
+    const nearestEnemy = this._findNearest(here, enemies);
+
+    // --- 2. 撃破チャンス：直線上の敵に爆風が届き、設置後も逃げ場があるなら迷わず爆弾を置く ---
+    if (canAct && nearestEnemy && random.next() < this.profile.killShotChance) {
+      const canHit = this._canBlastReach(stage, here, nearestEnemy, player.blastRange);
+      if (canHit && this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles)) {
+        placeBomb(player);
+        return;
+      }
+    }
+
+    // --- 3. 閉じ込め戦術：隣接する敵の逃げ道が(他の爆弾で)塞がっているなら爆弾で仕留める ---
+    const trappableEnemy = this._findTrappableEnemy(player, players, stage, bombs);
+    if (trappableEnemy && canAct) {
       placeBomb(player);
       return;
     }
 
-    // --- 3. アイテム取得：近くにアイテムがあれば向かう ---
+    // --- 4. アイテム取得 or プレイヤー追跡：目標を決める ---
     const nearestItem = this._findNearest(here, items);
-    // --- 4. プレイヤー追跡：生存している他プレイヤーのうち最も近い相手 ---
-    const nearestEnemy = this._findNearest(
-      here,
-      players.filter((p) => p.isAlive && p !== player)
-    );
-
     let target = null;
     if (nearestItem && (!nearestEnemy || random.next() > this.profile.chaseChance)) {
       target = nearestItem;
@@ -121,24 +143,33 @@ export class AI {
     }
 
     if (target) {
+      // 進路上に壊せるブロックがあるなら、通り抜けられるとはいえ積極的に爆破して
+      // 爆風が通る道・追跡ルートを切り開く（逃げ場がある時のみ）
+      if (canAct && this._hasAdjacentBreakableTowards(stage, here, target) && random.next() < this.profile.bombChance) {
+        if (this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles)) {
+          placeBomb(player);
+          return;
+        }
+      }
+
       const dir = this._chooseDirectionTowards(here, target, stage, bombs, dangerTiles, willMistake);
       if (dir) {
-        const moved = player.tryMove(dir, (c, r) => this._isBlockedByBomb(bombs, c, r));
-
-        // 追跡中、目標のすぐ手前まで来ていてブロックを壊す必要がある/敵に隣接している場合は爆弾設置
-        if (!moved && player.canPlaceBomb() && !inDanger && random.next() < this.profile.bombChance) {
-          placeBomb(player);
-        }
+        player.tryMove(dir, isBlockedByBomb);
         return;
       }
     }
 
-    // --- 5. 目的地が無い場合は徘徊しつつ、たまに爆弾を置いてブロックを開拓する ---
+    // --- 5. 目的地が無い場合は徘徊しつつ、隣接する壊せるブロックがあれば積極的に爆破する ---
+    if (canAct && this._hasAnyAdjacentBreakable(stage, here) && random.next() < this.profile.bombChance) {
+      if (this._hasEscapeRoute(stage, bombs, here, player.blastRange, dangerTiles)) {
+        placeBomb(player);
+        return;
+      }
+    }
+
     const wanderDir = this._chooseRandomWalkableDirection(here, stage, bombs, dangerTiles);
     if (wanderDir) {
-      player.tryMove(wanderDir, (c, r) => this._isBlockedByBomb(bombs, c, r));
-    } else if (player.canPlaceBomb() && random.next() < this.profile.bombChance * 0.3) {
-      placeBomb(player);
+      player.tryMove(wanderDir, isBlockedByBomb);
     }
   }
 
@@ -152,7 +183,7 @@ export class AI {
     for (const dir of DIRECTIONS) {
       const col = player.col + dir.dCol;
       const row = player.row + dir.dRow;
-      if (!stage.isWalkable(col, row, { canPassSoftBlock: player.canPassSoftBlock })) continue;
+      if (!stage.isWalkable(col, row)) continue;
       if (this._isBlockedByBomb(bombs, col, row)) continue;
       if (dangerTiles.has(tileKey(col, row))) continue;
       candidates.push(dir.name);
@@ -160,7 +191,12 @@ export class AI {
     return candidates.length > 0 ? candidates[Math.floor(random.next() * candidates.length)] : null;
   }
 
-  /** 隣接している敵がいて、かつその敵の逃げ道が少ない場合にtrueを返す（閉じ込め戦術） */
+  /**
+   * 隣接している敵がいて、かつその敵の逃げ道が少ない場合にtrueを返す（閉じ込め戦術）。
+   * NOTE: 壁は通り抜けられる仕様のため、ここでの「逃げ道が塞がっている」は
+   * マップ範囲外か、他の爆弾で塞がれている場合のみを指す（壁自体は逃げ道を
+   * 塞がない）。
+   */
   _findTrappableEnemy(player, players, stage, bombs) {
     const enemies = players.filter((p) => p.isAlive && p !== player);
     for (const enemy of enemies) {
@@ -171,7 +207,7 @@ export class AI {
       for (const dir of DIRECTIONS) {
         const col = enemy.col + dir.dCol;
         const row = enemy.row + dir.dRow;
-        if (stage.isWalkable(col, row, { canPassSoftBlock: enemy.canPassSoftBlock }) && !this._isBlockedByBomb(bombs, col, row)) {
+        if (stage.isWalkable(col, row) && !this._isBlockedByBomb(bombs, col, row)) {
           openEscapeRoutes++;
         }
       }
@@ -194,6 +230,70 @@ export class AI {
       }
     }
     return best;
+  }
+
+  /**
+   * `from`に爆弾を置いた場合、`to`まで爆風が届くかどうかを判定する。
+   * 同じ行/列に並んでいて、距離がblastRange以内、かつ間に壁(HARD/SOFT/ITEM
+   * 問わず)が挟まっていないことが条件（爆風は最初に当たったブロックで
+   * 止まるため、間に何かあると届かない）。
+   */
+  _canBlastReach(stage, from, to, range) {
+    if (from.col !== to.col && from.row !== to.row) return false;
+    const dist = manhattan(from, to);
+    if (dist === 0 || dist > range) return false;
+
+    const stepCol = Math.sign(to.col - from.col);
+    const stepRow = Math.sign(to.row - from.row);
+    for (let step = 1; step < dist; step++) {
+      const col = from.col + stepCol * step;
+      const row = from.row + stepRow * step;
+      if (stage.getBlockType(col, row) !== BLOCK_TYPES.EMPTY) return false;
+    }
+    return true;
+  }
+
+  /**
+   * `from`に今まさに爆弾を置いたとして、その爆風(dry-run)にも既存の危険地帯にも
+   * 他の爆弾にも当たらない隣接マスが1つでもあるかを確認する（自爆防止の簡易チェック）。
+   */
+  _hasEscapeRoute(stage, bombs, from, range, dangerTiles) {
+    const { tiles } = Explosion.computeBlastTiles(stage, from.col, from.row, range, { dryRun: true });
+    const futureBlast = new Set(tiles.map((t) => tileKey(t.col, t.row)));
+
+    for (const dir of DIRECTIONS) {
+      const col = from.col + dir.dCol;
+      const row = from.row + dir.dRow;
+      const key = tileKey(col, row);
+      if (!stage.isWalkable(col, row)) continue;
+      if (futureBlast.has(key)) continue;
+      if (dangerTiles.has(key)) continue;
+      if (this._isBlockedByBomb(bombs, col, row)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /** 目標へ向かう主要な方向の隣に、壊せるブロック(SOFT/ITEM)があるかどうか */
+  _hasAdjacentBreakableTowards(stage, here, target) {
+    const dCol = target.col - here.col;
+    const dRow = target.row - here.row;
+    const preferredDirs = Math.abs(dCol) >= Math.abs(dRow)
+      ? [{ dCol: dCol > 0 ? 1 : -1, dRow: 0 }, { dCol: 0, dRow: dRow > 0 ? 1 : -1 }]
+      : [{ dCol: 0, dRow: dRow > 0 ? 1 : -1 }, { dCol: dCol > 0 ? 1 : -1, dRow: 0 }];
+
+    return preferredDirs.some((d) => {
+      const type = stage.getBlockType(here.col + d.dCol, here.row + d.dRow);
+      return type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM;
+    });
+  }
+
+  /** 隣接4マスのいずれかに壊せるブロック(SOFT/ITEM)があるかどうか */
+  _hasAnyAdjacentBreakable(stage, here) {
+    return DIRECTIONS.some((dir) => {
+      const type = stage.getBlockType(here.col + dir.dCol, here.row + dir.dRow);
+      return type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM;
+    });
   }
 
   /**

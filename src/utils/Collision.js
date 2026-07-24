@@ -6,7 +6,7 @@
  * 座標変換・移動可否判定・爆風到達判定を提供する。
  * ------------------------------------------------------------
  */
-import { TILE_SIZE, BLOCK_TYPES } from '../constants/GameConstants.js';
+import { TILE_SIZE } from '../constants/GameConstants.js';
 
 export class Collision {
   /** ピクセル座標 -> グリッド座標 */
@@ -32,17 +32,20 @@ export class Collision {
 
   /**
    * プレイヤーがそのマスへ移動できるかを判定する。
+   *
+   * 仕様変更: 壁(HARD/SOFT/ITEMいずれも)は「見た目・爆風は遮るが、
+   * プレイヤーの移動は妨げない（通り抜けられる壁）」という設計にした。
+   * そのため実際にはマップ範囲内かどうかのみを判定する。
+   * ブロック種別による移動制限が復活しても困らないよう、シグネチャ
+   * (grid, col, row, options)自体は維持している。
+   *
    * @param {Array<Array<string>>} grid - Stage.jsが保持するブロック種別の2次元配列
    * @param {number} col
    * @param {number} row
-   * @param {object} options - { canPassSoftBlock: boolean } 👻アイテム等で通過可能な場合
+   * @param {object} options - 現状未使用（将来の拡張用に維持）
    */
   static isWalkable(grid, col, row, options = {}) {
-    const { canPassSoftBlock = false } = options;
     if (!grid[row] || grid[row][col] === undefined) return false;
-    const type = grid[row][col];
-    if (type === BLOCK_TYPES.HARD || type === BLOCK_TYPES.ITEM) return false;
-    if (type === BLOCK_TYPES.SOFT && !canPassSoftBlock) return false;
     return true;
   }
 

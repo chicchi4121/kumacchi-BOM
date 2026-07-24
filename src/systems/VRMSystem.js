@@ -46,11 +46,26 @@ export class VRMSystem {
   /** Three.js/GLTFLoader/three-vrmをCDN(import map経由)から遅延ロードする */
   _loadModules() {
     if (!this._modulesPromise) {
+      console.log('[VRMSystem] Three.js / three-vrm をCDNから読み込み中...');
       this._modulesPromise = Promise.all([
         import(/* webpackIgnore: true */ 'three'),
         import(/* webpackIgnore: true */ 'three/addons/loaders/GLTFLoader.js'),
         import(/* webpackIgnore: true */ '@pixiv/three-vrm'),
-      ]);
+      ])
+        .then((modules) => {
+          console.log('[VRMSystem] Three.js / three-vrm の読み込みに成功しました。');
+          return modules;
+        })
+        .catch((e) => {
+          // 次回呼び出し時に再試行できるようキャッシュを破棄する
+          this._modulesPromise = null;
+          console.error(
+            '[VRMSystem] Three.js / three-vrm のCDN読み込みに失敗しました。' +
+              'ネットワーク環境やindex.htmlのimport mapのURL/バージョン指定をご確認ください。',
+            e
+          );
+          throw e;
+        });
     }
     return this._modulesPromise;
   }
@@ -62,11 +77,16 @@ export class VRMSystem {
    *
    * @param {ArrayBuffer} arrayBuffer
    * @param {number} size - 出力canvasの一辺(px)
+   * @param {(stage: string) => void} [onProgress] - 進行状況を通知するコールバック
    * @returns {Promise<HTMLCanvasElement>}
    */
-  async renderSnapshot(arrayBuffer, size = 128) {
+  async renderSnapshot(arrayBuffer, size = 128, onProgress = () => {}) {
+    onProgress('loading-modules');
     const [THREE, { GLTFLoader }, threeVrm] = await this._loadModules();
     const { VRMLoaderPlugin, VRMUtils } = threeVrm;
+
+    onProgress('parsing');
+    console.log('[VRMSystem] VRMファイルをパース中...', { byteLength: arrayBuffer.byteLength });
 
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -79,6 +99,8 @@ export class VRMSystem {
     if (!vrm) {
       throw new Error('VRMデータが見つかりません（VRM拡張を含まないglTFファイルの可能性があります）');
     }
+    console.log('[VRMSystem] VRMのパースに成功しました。スナップショットを描画します。');
+    onProgress('rendering');
 
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
     VRMUtils.removeUnnecessaryJoints(gltf.scene);
@@ -114,6 +136,8 @@ export class VRMSystem {
     const canvas = renderer.domElement;
     renderer.dispose();
 
+    console.log('[VRMSystem] スナップショットの描画が完了しました。', { size, boxDimensions: dimensions });
+    onProgress('done');
     return canvas;
   }
 }

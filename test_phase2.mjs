@@ -175,5 +175,103 @@ console.log('\n== 5. AI/AISystemのimportとインスタンス化 ==');
   check('AISystem.setupで難易度が全AIに反映される', aiSystem.aiControllers.every((c) => c.difficulty === 'expert'));
 }
 
+console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブロック破壊 ==');
+{
+  function makeMockStage(rowsDef) {
+    const grid = rowsDef.map((r) => r.slice());
+    return {
+      rows: grid.length,
+      cols: grid[0].length,
+      getBlockType(col, row) {
+        if (!grid[row] || grid[row][col] === undefined) return BLOCK_TYPES.HARD;
+        return grid[row][col];
+      },
+      // Phase3の仕様変更: 壁は通り抜けられるため、マップ範囲内なら常にtrue
+      isWalkable(col, row) {
+        return !!(grid[row] && grid[row][col] !== undefined);
+      },
+      breakBlock() {
+        throw new Error('dryRun中はbreakBlockが呼ばれてはいけない');
+      },
+    };
+  }
+  const E = BLOCK_TYPES.EMPTY;
+  const H = BLOCK_TYPES.HARD;
+  const S = BLOCK_TYPES.SOFT;
+
+  const fakePlayer = { isAlive: true, isMoving: false, col: 0, row: 0 };
+  const ai = new AI(fakePlayer, 'normal');
+
+  // 6-1. _canBlastReach: 同じ行に並んでいて間に何もなければ届く
+  {
+    const stage = makeMockStage([[E, E, E, E, E, E, E]]);
+    check('間に何もなければ爆風は届く', ai._canBlastReach(stage, { col: 1, row: 0 }, { col: 4, row: 0 }, 5) === true);
+    check('距離がblastRangeを超えると届かない', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 6, row: 0 }, 3) === false);
+    check('行も列も異なる相手には届かない', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 3, row: 3 }, 5) === false);
+  }
+  {
+    const stage = makeMockStage([[E, E, S, E, E]]);
+    check('間に壊せるブロックがあると届かない（爆風はそこで止まるため）', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 4, row: 0 }, 5) === false);
+  }
+
+  // 6-2. _hasEscapeRoute: 隣に壁(HARD)があればそこへ逃げられる。壁は通り抜けられるが爆風は届かないため安全地帯になる
+  {
+    const rows = [
+      [E, E, E],
+      [H, E, E],
+      [E, E, E],
+    ];
+    const stage = makeMockStage(rows);
+    const dangerTiles = new Set();
+    check(
+      '隣接する壁の陰は自分の爆風が届かないため逃げ道になる',
+      ai._hasEscapeRoute(stage, [], { col: 1, row: 1 }, 1, dangerTiles) === true
+    );
+  }
+  {
+    // 4方向すべて開けている（壁も無い）交差点では、range1の爆風が隣接4マス全てに届くため逃げ場がない
+    const rows = [
+      [E, E, E],
+      [E, E, E],
+      [E, E, E],
+    ];
+    const stage = makeMockStage(rows);
+    const dangerTiles = new Set();
+    check(
+      '周囲が完全に開けた交差点では自分の爆風から逃げ切れない',
+      ai._hasEscapeRoute(stage, [], { col: 1, row: 1 }, 1, dangerTiles) === false
+    );
+  }
+
+  // 6-3. _hasAdjacentBreakableTowards / _hasAnyAdjacentBreakable
+  {
+    const rows = [
+      [E, E, E],
+      [E, E, S],
+      [E, E, E],
+    ];
+    const stage = makeMockStage(rows);
+    const here = { col: 1, row: 1 };
+    check(
+      '目標方向に壊せるブロックがあれば検出する',
+      ai._hasAdjacentBreakableTowards(stage, here, { col: 2, row: 1 }) === true
+    );
+    check(
+      '目標と逆方向にしか壊せるブロックが無ければ検出しない',
+      ai._hasAdjacentBreakableTowards(stage, here, { col: 0, row: 1 }) === false
+    );
+    check('隣接4マスのいずれかに壊せるブロックがあれば検出する', ai._hasAnyAdjacentBreakable(stage, here) === true);
+  }
+  {
+    const rows = [
+      [E, E, E],
+      [E, E, E],
+      [E, E, E],
+    ];
+    const stage = makeMockStage(rows);
+    check('周囲に壊せるブロックが無ければ検出しない', ai._hasAnyAdjacentBreakable(stage, { col: 1, row: 1 }) === false);
+  }
+}
+
 console.log(`\n合計: ${pass} 件成功 / ${fail} 件失敗`);
 if (fail > 0) process.exit(1);

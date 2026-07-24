@@ -97,6 +97,40 @@ for (let trial = 0; trial < 20; trial++) {
   if (!startOk) fail++, console.log('  NG  (試行', trial, ')開始地点が塞がれています');
 }
 
+console.log('\n== 2b. 壁は通り抜け可能・壁の上には爆弾を設置できない ==');
+{
+  const stage = new Stage(15, 11);
+  stage.generate(2);
+
+  // 内部の柱(偶数列・偶数行、境界を除く)は必ずHARDのはず
+  const pillarCol = 2;
+  const pillarRow = 2;
+  check('内部の柱はHARDブロックである', stage.getBlockType(pillarCol, pillarRow) === BLOCK_TYPES.HARD);
+  check('HARDブロックの上でも通行可能(壁は通り抜けられる)', stage.isWalkable(pillarCol, pillarRow) === true);
+  check('HARDブロックの上には爆弾を設置できない', stage.canPlaceBombAt(pillarCol, pillarRow) === false);
+
+  // SOFT/ITEMブロックを探して同様に検証する
+  let foundBreakable = false;
+  for (let row = 0; row < stage.rows && !foundBreakable; row++) {
+    for (let col = 0; col < stage.cols && !foundBreakable; col++) {
+      const type = stage.getBlockType(col, row);
+      if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) {
+        check('壊せるブロックの上でも通行可能(壁は通り抜けられる)', stage.isWalkable(col, row) === true);
+        check('壊せるブロックの上には爆弾を設置できない', stage.canPlaceBombAt(col, row) === false);
+        foundBreakable = true;
+      }
+    }
+  }
+  check('検証用の壊せるブロックが見つかった', foundBreakable);
+
+  // EMPTYマスには通常通り爆弾を設置できる
+  const [startPos] = stage.getStartPositions();
+  check('EMPTYマス(開始地点)には爆弾を設置できる', stage.canPlaceBombAt(startPos.col, startPos.row) === true);
+
+  // マップ範囲外は通行不可
+  check('マップ範囲外は通行不可', stage.isWalkable(-1, 0) === false);
+}
+
 console.log('\n== 3. 爆風伝播ロジック(Explosion) ==');
 const { Explosion } = await import('./src/objects/Explosion.js');
 

@@ -130,6 +130,15 @@ export class Stage {
   }
 
   /**
+   * そのマスに爆弾を設置できるかどうか。
+   * 壁(HARD/SOFT/ITEM)は通り抜けられるが、壁の中に立っている間は
+   * 爆弾を設置できない（通り抜けられることを利用した安全地帯化を防ぐため）。
+   */
+  canPlaceBombAt(col, row) {
+    return this.getBlockType(col, row) === BLOCK_TYPES.EMPTY;
+  }
+
+  /**
    * ブロックを破壊する。
    * @returns {{ destroyed: boolean, spawnItem: boolean, itemType: ?string }}
    */
