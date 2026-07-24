@@ -175,77 +175,48 @@ console.log('\n== 5. AI/AISystemのimportとインスタンス化 ==');
   check('AISystem.setupで難易度が全AIに反映される', aiSystem.aiControllers.every((c) => c.difficulty === 'expert'));
 }
 
-console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブロック破壊(サイコロ6面対応) ==');
+console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブロック破壊 ==');
 {
-  // AI.jsはCubeStage互換のインターフェース(getFaceStage/getBlockType(face,..)/
-  // isWalkable(face,..)/resolveMove(face,..))を前提とするため、単一の孤立した
-  // 面("TEST"面、面をまたがない=境界の外は常に非通行)を模したモックを使う。
-  const FACE = 'TEST';
-  function makeMockCubeStage(rowsDef) {
+  function makeMockStage(rowsDef) {
     const grid = rowsDef.map((r) => r.slice());
-    const rows = grid.length;
-    const cols = grid[0].length;
-    const flatStage = {
+    return {
+      rows: grid.length,
+      cols: grid[0].length,
       getBlockType(col, row) {
         if (!grid[row] || grid[row][col] === undefined) return BLOCK_TYPES.HARD;
         return grid[row][col];
       },
-      breakBlock() {
-        throw new Error('dryRun中はbreakBlockが呼ばれてはいけない');
-      },
-    };
-    return {
-      getFaceStage() {
-        return flatStage;
-      },
-      getBlockType(face, col, row) {
-        return flatStage.getBlockType(col, row);
-      },
       // 壊せない壁(HARD)は常に通行不可。壊せる壁(SOFT/ITEM)は
       // canPassSoftBlockがtrueの場合のみ通行可。EMPTYは常に通行可。
-      isWalkable(face, col, row, options = {}) {
+      isWalkable(col, row, options = {}) {
         if (!grid[row] || grid[row][col] === undefined) return false;
         const type = grid[row][col];
         if (type === BLOCK_TYPES.HARD) return false;
         if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) return !!options.canPassSoftBlock;
         return true;
       },
-      resolveMove(face, col, row, direction) {
-        const vec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[direction];
-        if (!vec) return null;
-        const targetCol = col + vec[0];
-        const targetRow = row + vec[1];
-        if (targetCol < 0 || targetCol >= cols || targetRow < 0 || targetRow >= rows) {
-          // このモックは単一の孤立した面として振る舞う(面をまたがない)ため、
-          // 境界の外への移動は「行き先が無い」として扱う
-          return null;
-        }
-        return { face, col: targetCol, row: targetRow, facing: direction, crossed: false };
+      breakBlock() {
+        throw new Error('dryRun中はbreakBlockが呼ばれてはいけない');
       },
     };
   }
   const E = BLOCK_TYPES.EMPTY;
   const H = BLOCK_TYPES.HARD;
   const S = BLOCK_TYPES.SOFT;
-  const pos = (col, row) => ({ face: FACE, col, row });
 
-  const fakePlayer = { isAlive: true, isMoving: false, face: FACE, col: 0, row: 0 };
+  const fakePlayer = { isAlive: true, isMoving: false, col: 0, row: 0 };
   const ai = new AI(fakePlayer, 'normal');
 
-  // 6-1. _canBlastReach: 同じ面・同じ行に並んでいて間に何もなければ届く
+  // 6-1. _canBlastReach: 同じ行に並んでいて間に何もなければ届く
   {
-    const stage = makeMockCubeStage([[E, E, E, E, E, E, E]]);
-    check('間に何もなければ爆風は届く', ai._canBlastReach(stage, pos(1, 0), pos(4, 0), 5) === true);
-    check('距離がblastRangeを超えると届かない', ai._canBlastReach(stage, pos(0, 0), pos(6, 0), 3) === false);
-    check('行も列も異なる相手には届かない', ai._canBlastReach(stage, pos(0, 0), pos(3, 3), 5) === false);
-    check(
-      '面が異なる相手には届かない(爆風は面をまたがない)',
-      ai._canBlastReach(stage, pos(0, 0), { face: 'OTHER', col: 0, row: 0 }, 5) === false
-    );
+    const stage = makeMockStage([[E, E, E, E, E, E, E]]);
+    check('間に何もなければ爆風は届く', ai._canBlastReach(stage, { col: 1, row: 0 }, { col: 4, row: 0 }, 5) === true);
+    check('距離がblastRangeを超えると届かない', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 6, row: 0 }, 3) === false);
+    check('行も列も異なる相手には届かない', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 3, row: 3 }, 5) === false);
   }
   {
-    const stage = makeMockCubeStage([[E, E, S, E, E]]);
-    check('間に壊せるブロックがあると届かない（爆風はそこで止まるため）', ai._canBlastReach(stage, pos(0, 0), pos(4, 0), 5) === false);
+    const stage = makeMockStage([[E, E, S, E, E]]);
+    check('間に壊せるブロックがあると届かない（爆風はそこで止まるため）', ai._canBlastReach(stage, { col: 0, row: 0 }, { col: 4, row: 0 }, 5) === false);
   }
 
   // 6-2. _hasEscapeRoute: 十字型の爆風は隣接4マスを必ず含むため、1マス先読みでは
@@ -259,11 +230,11 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
       [E, E, E],
       [E, E, E],
     ];
-    const stage = makeMockCubeStage(rows);
+    const stage = makeMockStage(rows);
     const dangerTiles = new Set();
     check(
       '開けた交差点では角を曲がって斜めに回り込むことで自分の爆風から逃げ切れる',
-      ai._hasEscapeRoute(stage, [], pos(1, 1), 1, dangerTiles) === true
+      ai._hasEscapeRoute(stage, [], { col: 1, row: 1 }, 1, dangerTiles) === true
     );
   }
   {
@@ -274,11 +245,11 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
       [H, E, E, E, H],
       [H, H, H, H, H],
     ];
-    const stage = makeMockCubeStage(rows);
+    const stage = makeMockStage(rows);
     const dangerTiles = new Set();
     check(
       '曲がり角の無い行き止まりの通路では自分の爆風から逃げ切れない',
-      ai._hasEscapeRoute(stage, [], pos(2, 1), 1, dangerTiles) === false
+      ai._hasEscapeRoute(stage, [], { col: 2, row: 1 }, 1, dangerTiles) === false
     );
   }
 
@@ -289,19 +260,15 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
       [E, E, S],
       [E, E, E],
     ];
-    const stage = makeMockCubeStage(rows);
-    const here = pos(1, 1);
+    const stage = makeMockStage(rows);
+    const here = { col: 1, row: 1 };
     check(
       '目標方向に壊せるブロックがあれば検出する',
-      ai._hasAdjacentBreakableTowards(stage, here, pos(2, 1)) === true
+      ai._hasAdjacentBreakableTowards(stage, here, { col: 2, row: 1 }) === true
     );
     check(
       '目標と逆方向にしか壊せるブロックが無ければ検出しない',
-      ai._hasAdjacentBreakableTowards(stage, here, pos(0, 1)) === false
-    );
-    check(
-      '目標が別の面にあれば検出しない',
-      ai._hasAdjacentBreakableTowards(stage, here, { face: 'OTHER', col: 2, row: 1 }) === false
+      ai._hasAdjacentBreakableTowards(stage, here, { col: 0, row: 1 }) === false
     );
     check('隣接4マスのいずれかに壊せるブロックがあれば検出する', ai._hasAnyAdjacentBreakable(stage, here) === true);
   }
@@ -311,8 +278,8 @@ console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブ
       [E, E, E],
       [E, E, E],
     ];
-    const stage = makeMockCubeStage(rows);
-    check('周囲に壊せるブロックが無ければ検出しない', ai._hasAnyAdjacentBreakable(stage, pos(1, 1)) === false);
+    const stage = makeMockStage(rows);
+    check('周囲に壊せるブロックが無ければ検出しない', ai._hasAnyAdjacentBreakable(stage, { col: 1, row: 1 }) === false);
   }
 }
 

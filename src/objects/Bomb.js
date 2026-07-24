@@ -12,15 +12,13 @@ import { Collision } from '../utils/Collision.js';
 export class Bomb {
   /**
    * @param {Phaser.Scene} scene
-   * @param {string} face - サイコロ6面ステージ上でこの爆弾が置かれている面(CUBE_FACE_NAMESのいずれか)
    * @param {number} col
    * @param {number} row
    * @param {object} options - { ownerId, blastRange, onDetonate }
    *   onDetonate: (bomb: Bomb) => void  爆発時に呼び出されるコールバック
    */
-  constructor(scene, face, col, row, options = {}) {
+  constructor(scene, col, row, options = {}) {
     this.scene = scene;
-    this.face = face;
     this.col = col;
     this.row = row;
     this.ownerId = options.ownerId ?? null;
@@ -29,12 +27,7 @@ export class Bomb {
     this.detonated = false;
     this.kickable = false; // TODO(Phase2): 💥アイテム所持時にtrueとして蹴り移動を許可する
 
-    // 3D(サイコロステージ)モードでは見た目はCubeRendererがPlayerと同様に
-    // 状態(face/col/row/detonated)を読み取って描画するため、Phaser用の
-    // スプライトは生成しない（開発ルール9: 描画とロジックの分離）。
-    if (!scene.render3D) {
-      this._createSprite();
-    }
+    this._createSprite();
 
     // 約3秒後に自動爆発するタイマー。誘爆時はdetonate()が先に呼ばれ、
     // その中でこのタイマーをキャンセルする。
@@ -65,9 +58,5 @@ export class Bomb {
     this.fuseTimer?.remove(false);
     this.sprite?.destroy();
     this.onDetonate(this);
-  }
-
-  destroy() {
-    this.sprite?.destroy();
   }
 }

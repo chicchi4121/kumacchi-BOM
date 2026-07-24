@@ -18,10 +18,7 @@ const config = {
   width: SCREEN_WIDTH,
   height: SCREEN_HEIGHT,
   parent: 'game-container',
-  // サイコロ6面ステージ(Phase3)のバトル画面はThree.js(#cube-canvas)で3D描画し、
-  // Phaser側はHUD/UI/カウントダウン等のテキスト・オーバーレイのみを担当する。
-  // その3D映像を透過して見せるため、Phaserのcanvas自体は透明にしておく。
-  transparent: true,
+  backgroundColor: '#1e1e1e',
   fps: {
     target: TARGET_FPS,
   },
@@ -35,21 +32,6 @@ const config = {
 };
 
 window.addEventListener('load', () => {
-  const game = new Phaser.Game(config);
-  // #cube-canvas(Three.js)の上にPhaserのcanvas(HUD/UI用)を重ねて表示するため、
-  // CSSで積み重ね順を制御できるようクラスを付与する(index.html参照)。
-  game.canvas?.classList.add('phaser-canvas');
-
-  // #cube-canvasもPhaserと同じ表示サイズに揃えておく(CubeRendererが実際の
-  // 描画解像度はdevicePixelRatio込みで別途調整する)。Phaser.Scale.FITは
-  // ウィンドウサイズに応じてcanvasの表示サイズ(CSS上のwidth/height)を
-  // 動的に変えるため、resizeイベントのたびに#cube-canvas側にも反映する。
-  const cubeCanvas = document.getElementById('cube-canvas');
-  const syncCubeCanvasSize = () => {
-    if (!cubeCanvas || !game.canvas) return;
-    cubeCanvas.style.width = game.canvas.style.width || `${SCREEN_WIDTH}px`;
-    cubeCanvas.style.height = game.canvas.style.height || `${SCREEN_HEIGHT}px`;
-  };
-  syncCubeCanvasSize();
-  game.scale.on('resize', syncCubeCanvasSize);
+  // eslint-disable-next-line no-new
+  new Phaser.Game(config);
 });
