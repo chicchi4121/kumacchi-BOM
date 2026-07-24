@@ -11,7 +11,9 @@
  *   ・UI強化（順位・カウントダウン）
  *   ・BGM・効果音（SoundSystem連携）
  *
- * 必殺技の発動(Phase3)・VRM(Phase3)は未対応のまま。
+ * Phase3の第一歩として、人間プレイヤーの見た目をVRMモデルの静止画
+ * スナップショットに差し替える機能（VRMSystem連携）を実装している。
+ * 必殺技の発動・サイコロ6面ステージ等その他のPhase3要素は未対応。
  * ------------------------------------------------------------
  */
 import {
@@ -33,6 +35,9 @@ import { AISystem } from '../systems/AISystem.js';
 import { ItemSystem } from '../systems/ItemSystem.js';
 import { BattleSystem } from '../systems/BattleSystem.js';
 import { soundSystem } from '../systems/SoundSystem.js';
+import { vrmSystem } from '../systems/VRMSystem.js';
+
+const DEFAULT_VRM_PATH = 'assets/vrm/kumacchi.vrm';
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -74,7 +79,45 @@ export class GameScene extends Phaser.Scene {
     this.battleSystem = new BattleSystem(this.players, { timeLimitMs: this.config.timeLimitMs });
     this.resultTriggered = false;
 
+    this._sceneActive = true;
+    this.events.once('shutdown', () => {
+      this._sceneActive = false;
+    });
+
     this._startCountdown();
+    this._loadHumanVrmAppearance();
+  }
+
+  /**
+   * 人間プレイヤーの見た目をVRMモデルのスナップショットに差し替える。
+   * タイトル画面でカスタムVRMがアップロードされていればそれを、
+   * なければ同梱のデフォルトVRM(assets/vrm/kumacchi.vrm)を使用する。
+   * 読込・描画に失敗した場合は何もせず、デフォルトの色付き四角のままにする
+   * （開発ルール8: VRM対応の有無がゲームロジックに影響しないこと）。
+   */
+  async _loadHumanVrmAppearance() {
+    try {
+      let arrayBuffer = vrmSystem.customArrayBuffer;
+      if (!arrayBuffer) {
+        const response = await fetch(DEFAULT_VRM_PATH);
+        if (!response.ok) return;
+        arrayBuffer = await response.arrayBuffer();
+      }
+
+      const canvas = await vrmSystem.renderSnapshot(arrayBuffer, 128);
+      if (!this._sceneActive || !this.humanPlayer?.isAlive) return;
+
+      const textureKey = 'vrm_snapshot_player1';
+      if (this.textures.exists(textureKey)) this.textures.remove(textureKey);
+      this.textures.addCanvas(textureKey, canvas);
+
+      const { x, y } = this.humanPlayer.displayObject;
+      const image = this.add.image(x, y, textureKey);
+      image.setDisplaySize(TILE_SIZE - 6, TILE_SIZE - 6);
+      this.humanPlayer.setDisplayObject(image);
+    } catch (e) {
+      console.warn('[GameScene] VRMの読み込みに失敗したため、デフォルト表示のままにします。', e);
+    }
   }
 
   /** Stage.gridの内容に合わせてBlockオブジェクトを生成する */
