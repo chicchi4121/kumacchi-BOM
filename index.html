@@ -1,70 +1,76 @@
-/**
- * SkillSystem.js
- * ------------------------------------------------------------
- * 必殺技ゲージの管理と必殺技発動を担当するシステム（Phase3実装予定）。
- * データ駆動設計により、キャラクターごとの必殺技を後から追加できる
- * よう、SKILL_DEFINITIONSに定義を追加するだけで拡張可能にしてある。
- * ------------------------------------------------------------
- */
-import {
-  SKILL_GAUGE_MAX,
-  SKILL_GAUGE_PER_BLOCK_BREAK,
-  SKILL_GAUGE_PER_KILL,
-  RAGE_MODE_DURATION_MS,
-} from '../constants/GameConstants.js';
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>くまっちボム！</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #1e1e1e;
+      height: 100%;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Hiragino Sans', 'Yu Gothic', sans-serif;
+    }
+    #game-container {
+      position: relative;
+      line-height: 0;
+    }
+    /*
+      サイコロ6面ステージ(Phase3)用: Three.jsで3D描画するcanvasを
+      #game-container の下敷きとして重ねる。Phaser側のcanvasは
+      main.jsでtransparent:trueにしてあるため、対戦シーン(GameScene)では
+      このcanvasの3D映像がPhaserのUI/HUDテキストの下に透けて見える。
+      #game-container 内で先に配置しておくことで、Phaserが後から追加する
+      自身のcanvasより下(z-index)に重なる。
+    */
+    #cube-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 0;
+    }
+    .phaser-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+  </style>
+  <!-- Phaser 3 (CDN読み込み。ビルドステップなしで軽量に動作させるため) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
 
-// キャラクターごとの必殺技定義（将来追加しやすいようデータ駆動にしてある）
-const SKILL_DEFINITIONS = {
-  rage_mode: {
-    name: '爆裂モード',
-    durationMs: RAGE_MODE_DURATION_MS,
-    apply(player) {
-      player._preRageStats = { maxBombs: player.maxBombs, blastRange: player.blastRange };
-      player.maxBombs = 10;
-      player.blastRange = 10;
-      player._blastPenetrates = true; // TODO(Phase3): Explosion側で貫通処理に対応する
-    },
-    revert(player) {
-      if (player._preRageStats) {
-        player.maxBombs = player._preRageStats.maxBombs;
-        player.blastRange = player._preRageStats.blastRange;
-        delete player._preRageStats;
-      }
-      player._blastPenetrates = false;
-    },
-  },
-};
-
-export class SkillSystem {
-  constructor(player, skillKey = 'rage_mode') {
-    this.player = player;
-    this.skillKey = skillKey;
-    this.gauge = 0;
-    this.used = false; // 「爆裂モード」は1回だけという仕様に対応
+  <!--
+    VRM対応(Phase3)用: Three.js / three-vrm をビルドステップなしで使うための
+    import map。VRMSystem.js内では `import * as THREE from 'three'` のような
+    ベア指定子(bare specifier)でロードするため、このimport mapが
+    どのmoduleスクリプトよりも前に必要（importmapは文書内で最初の
+    moduleスクリプトより前になければならない）。
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2/lib/three-vrm.module.js"
+    }
   }
-
-  onBlockBroken() {
-    if (!this.used) this.gauge = Math.min(SKILL_GAUGE_MAX, this.gauge + SKILL_GAUGE_PER_BLOCK_BREAK);
-  }
-
-  onEnemyDefeated() {
-    if (!this.used) this.gauge = Math.min(SKILL_GAUGE_MAX, this.gauge + SKILL_GAUGE_PER_KILL);
-  }
-
-  get isReady() {
-    return !this.used && this.gauge >= SKILL_GAUGE_MAX;
-  }
-
-  activate(scene) {
-    if (!this.isReady) return false;
-    const def = SKILL_DEFINITIONS[this.skillKey];
-    if (!def) return false;
-
-    def.apply(this.player);
-    this.used = true;
-    this.gauge = 0;
-
-    scene.time.delayedCall(def.durationMs, () => def.revert(this.player));
-    return true;
-  }
-}
+  </script>
+</head>
+<body>
+  <div id="game-container">
+    <!--
+      サイコロ6面ステージ(Phase3)の3D描画用canvas。CubeRenderer.jsが
+      Three.jsでこのcanvasに直接描画する。GameContainer内でPhaserのcanvasより
+      前に置くことで、Phaserのcanvas(transparent:true、HUD/UI用)の下に
+      3D映像が透けて見える。
+    -->
+    <canvas id="cube-canvas"></canvas>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

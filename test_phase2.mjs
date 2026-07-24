@@ -1,89 +1,320 @@
 /**
- * Save.js
+ * test_phase2.mjs
  * ------------------------------------------------------------
- * ブラウザLocalStorageへの保存・読込を担当するモジュール。
- * 保存内容: 設定 / キー配置 / VRM / 音量 / ランキングキャッシュ
- * データ管理をゲームロジックから分離するため、他のクラスは
- * 直接localStorageを触らずこのモジュール経由でアクセスすること。
+ * Phase2で追加したロジック（アイテム効果適用・勝敗判定/順位確定・
+ * アイテム付きブロックの破壊・AIモジュールのimport)に対する
+ * 簡易ユニットテスト。test_phase1.mjsと同様、Phaser CDNへの
+ * ネットワークアクセスが無い環境でも検証できるようにしてある。
  * ------------------------------------------------------------
  */
+class FakeScene {}
+globalThis.Phaser = {
+  Scene: FakeScene,
+  AUTO: 'AUTO',
+  Scale: { FIT: 'FIT', CENTER_BOTH: 'CENTER_BOTH' },
+  Input: { Keyboard: { KeyCodes: { SPACE: 'SPACE', ESC: 'ESC' } } },
+};
 
-const STORAGE_PREFIX = 'kumacchi-bomb:';
-
-const KEYS = Object.freeze({
-  SETTINGS: `${STORAGE_PREFIX}settings`,
-  KEY_BINDINGS: `${STORAGE_PREFIX}keyBindings`,
-  VRM: `${STORAGE_PREFIX}vrm`,
-  VOLUME: `${STORAGE_PREFIX}volume`,
-  RANKING_CACHE: `${STORAGE_PREFIX}rankingCache`,
-});
-
-export class Save {
-  static _isAvailable() {
-    try {
-      return typeof window !== 'undefined' && !!window.localStorage;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  static _get(key, fallback) {
-    if (!Save._isAvailable()) return fallback;
-    try {
-      const raw = window.localStorage.getItem(key);
-      return raw !== null ? JSON.parse(raw) : fallback;
-    } catch (e) {
-      console.warn(`[Save] 読込に失敗しました: ${key}`, e);
-      return fallback;
-    }
-  }
-
-  static _set(key, value) {
-    if (!Save._isAvailable()) return;
-    try {
-      window.localStorage.setItem(key, JSON.stringify(value));
-    } catch (e) {
-      console.warn(`[Save] 保存に失敗しました: ${key}`, e);
-    }
-  }
-
-  static getSettings() {
-    return Save._get(KEYS.SETTINGS, { bgmVolume: 0.8, seVolume: 0.8 });
-  }
-
-  static setSettings(settings) {
-    Save._set(KEYS.SETTINGS, settings);
-  }
-
-  static getKeyBindings() {
-    return Save._get(KEYS.KEY_BINDINGS, null); // nullの場合はデフォルト操作を使用
-  }
-
-  static setKeyBindings(bindings) {
-    Save._set(KEYS.KEY_BINDINGS, bindings);
-  }
-
-  static getVrmInfo() {
-    return Save._get(KEYS.VRM, null);
-  }
-
-  static setVrmInfo(vrmInfo) {
-    Save._set(KEYS.VRM, vrmInfo);
-  }
-
-  static getVolume() {
-    return Save._get(KEYS.VOLUME, { bgm: 0.8, se: 0.8 });
-  }
-
-  static setVolume(volume) {
-    Save._set(KEYS.VOLUME, volume);
-  }
-
-  static getRankingCache() {
-    return Save._get(KEYS.RANKING_CACHE, []);
-  }
-
-  static setRankingCache(rankingList) {
-    Save._set(KEYS.RANKING_CACHE, rankingList);
+let pass = 0;
+let fail = 0;
+function check(label, condition) {
+  if (condition) {
+    pass++;
+    console.log(`  OK  ${label}`);
+  } else {
+    fail++;
+    console.log(`  NG  ${label}`);
   }
 }
+
+const { BLOCK_TYPES, ITEM_TYPES } = await import('./src/constants/GameConstants.js');
+const { Stage } = await import('./src/objects/Stage.js');
+const { Explosion } = await import('./src/objects/Explosion.js');
+const { ItemSystem } = await import('./src/systems/ItemSystem.js');
+const { BattleSystem } = await import('./src/systems/BattleSystem.js');
+const { AI } = await import('./src/objects/AI.js');
+const { AISystem } = await import('./src/systems/AISystem.js');
+
+console.log('== 1. Stageのアイテム種別事前決定 ==');
+{
+  let foundItemBlock = false;
+  for (let trial = 0; trial < 30 && !foundItemBlock; trial++) {
+    const stage = new Stage(15, 11);
+    stage.generate(2);
+    for (let row = 0; row < stage.rows && !foundItemBlock; row++) {
+      for (let col = 0; col < stage.cols && !foundItemBlock; col++) {
+        if (stage.getBlockType(col, row) === BLOCK_TYPES.ITEM) {
+          const result = stage.breakBlock(col, row);
+          check('ITEMブロック破壊でspawnItem=true', result.spawnItem === true);
+          check('ITEMブロック破壊でitemTypeがITEM_TYPESのいずれか', Object.values(ITEM_TYPES).includes(result.itemType));
+          check('破壊後はブロックがEMPTYになる', stage.getBlockType(col, row) === BLOCK_TYPES.EMPTY);
+          foundItemBlock = true;
+        }
+      }
+    }
+  }
+  check('30回の試行中にITEMブロックが最低1つ生成された', foundItemBlock);
+}
+
+console.log('\n== 2. Explosionのdry-run（AI危険地帯予測が盤面を変更しない） ==');
+{
+  function makeMockStage(rowsDef) {
+    const grid = rowsDef.map((r) => r.slice());
+    return {
+      getBlockType(col, row) {
+        if (!grid[row] || grid[row][col] === undefined) return BLOCK_TYPES.HARD;
+        return grid[row][col];
+      },
+      breakBlock() {
+        throw new Error('dryRun中はbreakBlockが呼ばれてはいけない');
+      },
+    };
+  }
+  const E = BLOCK_TYPES.EMPTY;
+  const S = BLOCK_TYPES.SOFT;
+  const row = [E, E, E, S, E, E, E];
+  const stage = makeMockStage([row]);
+  let threw = false;
+  let tiles = [];
+  try {
+    ({ tiles } = Explosion.computeBlastTiles(stage, 2, 0, 5, { dryRun: true }));
+  } catch (e) {
+    threw = true;
+  }
+  check('dryRun中はbreakBlockを呼ばない（例外が発生しない）', !threw);
+  check('dryRunでも爆風が届くマスは正しく計算される', tiles.some((t) => t.col === 3 && t.row === 0));
+}
+
+console.log('\n== 3. ItemSystemの効果適用 ==');
+{
+  function makeFakePlayer() {
+    return {
+      maxBombs: 1,
+      blastRange: 1,
+      speedMultiplier: 1,
+      lives: 3,
+      invincibleUntil: 0,
+      canPassSoftBlock: false,
+      canKickBombs: false,
+    };
+  }
+  const fakeScene = { time: { now: 1000 } };
+
+  let p = makeFakePlayer();
+  ItemSystem.applyItem(p, ITEM_TYPES.BOMB_UP, fakeScene);
+  check('BOMB_UPでmaxBombsが増える', p.maxBombs === 2);
+
+  p = makeFakePlayer();
+  ItemSystem.applyItem(p, ITEM_TYPES.FIRE_UP, fakeScene);
+  check('FIRE_UPでblastRangeが増える', p.blastRange === 2);
+
+  p = makeFakePlayer();
+  ItemSystem.applyItem(p, ITEM_TYPES.LIFE_UP, fakeScene);
+  check('LIFE_UPでlivesが増える', p.lives === 4);
+
+  p = makeFakePlayer();
+  ItemSystem.applyItem(p, ITEM_TYPES.SHIELD, fakeScene);
+  check('SHIELDでinvincibleUntilが未来の時刻になる', p.invincibleUntil === 1000 + 5000);
+
+  p = makeFakePlayer();
+  ItemSystem.applyItem(p, ITEM_TYPES.GHOST, fakeScene);
+  check('GHOSTでcanPassSoftBlockがtrueになる', p.canPassSoftBlock === true);
+
+  p = makeFakePlayer();
+  ItemSystem.applyItem(p, ITEM_TYPES.KICK, fakeScene);
+  check('KICKでcanKickBombsがtrueになる', p.canKickBombs === true);
+}
+
+console.log('\n== 4. BattleSystemの勝敗判定・順位確定 ==');
+{
+  function makeFakePlayer(playerId, lives, kills) {
+    return { playerId, lives, isAlive: true, stats: { kills, bombsExploded: 0, itemsCollected: 0 } };
+  }
+
+  // 4-1. 最後の1人になったら即座に勝者が確定する
+  {
+    const p1 = makeFakePlayer(1, 3, 0);
+    const p2 = makeFakePlayer(2, 0, 0);
+    p2.isAlive = false;
+    const battle = new BattleSystem([p1, p2], { timeLimitMs: 180000 });
+    battle.notifyPlayerDied(p2);
+    battle.update(16);
+    check('最後の1人になった時点でisOverになる', battle.isOver === true);
+    check('生存している方が勝者になる', battle.winner === p1);
+    check('勝者の最終順位は1位', battle.finalRanks.get(1) === 1);
+    check('死亡したプレイヤーは2位', battle.finalRanks.get(2) === 2);
+  }
+
+  // 4-2. 時間切れ時は残機→撃破数の順で勝者を決める
+  {
+    const p1 = makeFakePlayer(1, 2, 5);
+    const p2 = makeFakePlayer(2, 2, 1);
+    const p3 = makeFakePlayer(3, 1, 99);
+    const battle = new BattleSystem([p1, p2, p3], { timeLimitMs: 100 });
+    battle.update(200); // 時間切れ
+    check('残機が同点の場合は撃破数が多い方が勝者', battle.winner === p1);
+  }
+
+  // 4-3. 生存中のプレイヤーはgetLiveRank()がnullを返す（複数生存時）
+  {
+    const p1 = makeFakePlayer(1, 3, 0);
+    const p2 = makeFakePlayer(2, 3, 0);
+    const battle = new BattleSystem([p1, p2], { timeLimitMs: 180000 });
+    check('複数生存中はgetLiveRankがnull', battle.getLiveRank(p1) === null);
+  }
+}
+
+console.log('\n== 5. AI/AISystemのimportとインスタンス化 ==');
+{
+  const fakePlayer = { isAlive: true, isMoving: false, col: 1, row: 1, canPassSoftBlock: false, canKickBombs: false };
+  const ai = new AI(fakePlayer, 'hard');
+  check('AIインスタンスが難易度プロファイルを保持する', ai.profile.decisionIntervalMs === 220);
+
+  const aiSystem = new AISystem();
+  aiSystem.setup([fakePlayer, fakePlayer], 'expert');
+  check('AISystem.setupで難易度が全AIに反映される', aiSystem.aiControllers.every((c) => c.difficulty === 'expert'));
+}
+
+console.log('\n== 6. AIの撃破チャンス・逃げ道確認・積極的なブロック破壊(サイコロ6面対応) ==');
+{
+  // AI.jsはCubeStage互換のインターフェース(getFaceStage/getBlockType(face,..)/
+  // isWalkable(face,..)/resolveMove(face,..))を前提とするため、単一の孤立した
+  // 面("TEST"面、面をまたがない=境界の外は常に非通行)を模したモックを使う。
+  const FACE = 'TEST';
+  function makeMockCubeStage(rowsDef) {
+    const grid = rowsDef.map((r) => r.slice());
+    const rows = grid.length;
+    const cols = grid[0].length;
+    const flatStage = {
+      getBlockType(col, row) {
+        if (!grid[row] || grid[row][col] === undefined) return BLOCK_TYPES.HARD;
+        return grid[row][col];
+      },
+      breakBlock() {
+        throw new Error('dryRun中はbreakBlockが呼ばれてはいけない');
+      },
+    };
+    return {
+      getFaceStage() {
+        return flatStage;
+      },
+      getBlockType(face, col, row) {
+        return flatStage.getBlockType(col, row);
+      },
+      // 壊せない壁(HARD)は常に通行不可。壊せる壁(SOFT/ITEM)は
+      // canPassSoftBlockがtrueの場合のみ通行可。EMPTYは常に通行可。
+      isWalkable(face, col, row, options = {}) {
+        if (!grid[row] || grid[row][col] === undefined) return false;
+        const type = grid[row][col];
+        if (type === BLOCK_TYPES.HARD) return false;
+        if (type === BLOCK_TYPES.SOFT || type === BLOCK_TYPES.ITEM) return !!options.canPassSoftBlock;
+        return true;
+      },
+      resolveMove(face, col, row, direction) {
+        const vec = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[direction];
+        if (!vec) return null;
+        const targetCol = col + vec[0];
+        const targetRow = row + vec[1];
+        if (targetCol < 0 || targetCol >= cols || targetRow < 0 || targetRow >= rows) {
+          // このモックは単一の孤立した面として振る舞う(面をまたがない)ため、
+          // 境界の外への移動は「行き先が無い」として扱う
+          return null;
+        }
+        return { face, col: targetCol, row: targetRow, facing: direction, crossed: false };
+      },
+    };
+  }
+  const E = BLOCK_TYPES.EMPTY;
+  const H = BLOCK_TYPES.HARD;
+  const S = BLOCK_TYPES.SOFT;
+  const pos = (col, row) => ({ face: FACE, col, row });
+
+  const fakePlayer = { isAlive: true, isMoving: false, face: FACE, col: 0, row: 0 };
+  const ai = new AI(fakePlayer, 'normal');
+
+  // 6-1. _canBlastReach: 同じ面・同じ行に並んでいて間に何もなければ届く
+  {
+    const stage = makeMockCubeStage([[E, E, E, E, E, E, E]]);
+    check('間に何もなければ爆風は届く', ai._canBlastReach(stage, pos(1, 0), pos(4, 0), 5) === true);
+    check('距離がblastRangeを超えると届かない', ai._canBlastReach(stage, pos(0, 0), pos(6, 0), 3) === false);
+    check('行も列も異なる相手には届かない', ai._canBlastReach(stage, pos(0, 0), pos(3, 3), 5) === false);
+    check(
+      '面が異なる相手には届かない(爆風は面をまたがない)',
+      ai._canBlastReach(stage, pos(0, 0), { face: 'OTHER', col: 0, row: 0 }, 5) === false
+    );
+  }
+  {
+    const stage = makeMockCubeStage([[E, E, S, E, E]]);
+    check('間に壊せるブロックがあると届かない（爆風はそこで止まるため）', ai._canBlastReach(stage, pos(0, 0), pos(4, 0), 5) === false);
+  }
+
+  // 6-2. _hasEscapeRoute: 十字型の爆風は隣接4マスを必ず含むため、1マス先読みでは
+  // 常に「逃げ場なし」になってしまう。角を曲がって斜めに回り込めば爆風の外に
+  // 出られるはずなので、数マス先までのBFSで正しく逃げ道を見つけられることを確認する。
+  {
+    // 4方向すべて開けている交差点: 隣接4マスは全てrange1の爆風に含まれるが、
+    // そこからさらに1マス角を曲がれば(斜め方向)爆風の外に出られる
+    const rows = [
+      [E, E, E],
+      [E, E, E],
+      [E, E, E],
+    ];
+    const stage = makeMockCubeStage(rows);
+    const dangerTiles = new Set();
+    check(
+      '開けた交差点では角を曲がって斜めに回り込むことで自分の爆風から逃げ切れる',
+      ai._hasEscapeRoute(stage, [], pos(1, 1), 1, dangerTiles) === true
+    );
+  }
+  {
+    // 行き止まりの一直線の通路(左右をHARDで塞がれている)では、爆風の直線上から
+    // 外れる曲がり角が存在しないため、逃げ場が無い
+    const rows = [
+      [H, H, H, H, H],
+      [H, E, E, E, H],
+      [H, H, H, H, H],
+    ];
+    const stage = makeMockCubeStage(rows);
+    const dangerTiles = new Set();
+    check(
+      '曲がり角の無い行き止まりの通路では自分の爆風から逃げ切れない',
+      ai._hasEscapeRoute(stage, [], pos(2, 1), 1, dangerTiles) === false
+    );
+  }
+
+  // 6-3. _hasAdjacentBreakableTowards / _hasAnyAdjacentBreakable
+  {
+    const rows = [
+      [E, E, E],
+      [E, E, S],
+      [E, E, E],
+    ];
+    const stage = makeMockCubeStage(rows);
+    const here = pos(1, 1);
+    check(
+      '目標方向に壊せるブロックがあれば検出する',
+      ai._hasAdjacentBreakableTowards(stage, here, pos(2, 1)) === true
+    );
+    check(
+      '目標と逆方向にしか壊せるブロックが無ければ検出しない',
+      ai._hasAdjacentBreakableTowards(stage, here, pos(0, 1)) === false
+    );
+    check(
+      '目標が別の面にあれば検出しない',
+      ai._hasAdjacentBreakableTowards(stage, here, { face: 'OTHER', col: 2, row: 1 }) === false
+    );
+    check('隣接4マスのいずれかに壊せるブロックがあれば検出する', ai._hasAnyAdjacentBreakable(stage, here) === true);
+  }
+  {
+    const rows = [
+      [E, E, E],
+      [E, E, E],
+      [E, E, E],
+    ];
+    const stage = makeMockCubeStage(rows);
+    check('周囲に壊せるブロックが無ければ検出しない', ai._hasAnyAdjacentBreakable(stage, pos(1, 1)) === false);
+  }
+}
+
+console.log(`\n合計: ${pass} 件成功 / ${fail} 件失敗`);
+if (fail > 0) process.exit(1);

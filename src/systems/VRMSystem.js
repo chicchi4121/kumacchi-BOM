@@ -11,11 +11,12 @@
  * 実装方針（現状のスコープ）:
  *   ボンバーマン系の見下ろし2Dグリッド上でVRMをリアルタイム3D表示・
  *   アニメーションさせるのは大掛かりになるため、Phase3の第一段階として
- *   「VRMモデルを正面から1枚レンダリングし、そのcanvasをPhaserの
- *   静止画テクスチャとして使う」方式を採用する。
+ *   「VRMモデルを正面/背面/左/右の4方向から1枚ずつレンダリングし、
+ *   それぞれのcanvasをPhaserの静止画テクスチャとして使い、移動方向
+ *   (Player.facing)に応じて差し替える」方式を採用する。
  *   将来的にライブ3D表示（歩行アニメーション等）に発展させる場合は、
- *   本クラスのAPI(loadFromArrayBuffer / renderSnapshotTexture)は
- *   変えずに内部実装だけ差し替えられるようにしてある。
+ *   本クラスのAPI(renderSnapshotSet)は変えずに内部実装だけ差し替え
+ *   られるようにしてある。
  *
  * Three.js / @pixiv/three-vrm はビルドステップを増やさないよう
  * index.htmlのimport map経由でCDNからロードする（ベア指定子でdynamic
@@ -71,16 +72,20 @@ export class VRMSystem {
   }
 
   /**
-   * VRMファイルの中身(ArrayBuffer)から、正面向きの静止画スナップショットを
-   * 描画したHTMLCanvasElementを生成する。失敗した場合は例外を投げる
-   * （呼び出し側でcatchし、デフォルト見た目にフォールバックすること）。
+   * VRMファイルの中身(ArrayBuffer)から、正面(down)・背面(up)・左(left)・
+   * 右(right)の4方向の静止画スナップショットを描画し、
+   * { down, up, left, right } (各値はHTMLCanvasElement)として返す。
+   * キー名はPlayer.facing('up'|'down'|'left'|'right')にそのまま対応する
+   * （'down'=画面手前=正面、'up'=画面奥=背面、という向き）。
+   * 失敗した場合は例外を投げる（呼び出し側でcatchし、デフォルト見た目に
+   * フォールバックすること）。
    *
    * @param {ArrayBuffer} arrayBuffer
    * @param {number} size - 出力canvasの一辺(px)
    * @param {(stage: string) => void} [onProgress] - 進行状況を通知するコールバック
-   * @returns {Promise<HTMLCanvasElement>}
+   * @returns {Promise<{down: HTMLCanvasElement, up: HTMLCanvasElement, left: HTMLCanvasElement, right: HTMLCanvasElement}>}
    */
-  async renderSnapshot(arrayBuffer, size = 128, onProgress = () => {}) {
+  async renderSnapshotSet(arrayBuffer, size = 128, onProgress = () => {}) {
     onProgress('loading-modules');
     const [THREE, { GLTFLoader }, threeVrm] = await this._loadModules();
     const { VRMLoaderPlugin, VRMUtils } = threeVrm;
@@ -99,14 +104,11 @@ export class VRMSystem {
     if (!vrm) {
       throw new Error('VRMデータが見つかりません（VRM拡張を含まないglTFファイルの可能性があります）');
     }
-    console.log('[VRMSystem] VRMのパースに成功しました。スナップショットを描画します。');
+    console.log('[VRMSystem] VRMのパースに成功しました。4方向のスナップショットを描画します。');
     onProgress('rendering');
 
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
     VRMUtils.removeUnnecessaryJoints(gltf.scene);
-    // three-vrmはモデルの-Z方向を正面としているため、+Z側(カメラ側)を
-    // 向かせるために180度回転させる。
-    vrm.scene.rotation.y = Math.PI;
     vrm.update(0);
 
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
@@ -120,39 +122,72 @@ export class VRMSystem {
     dirLight.position.set(0.5, 1, 1);
     scene.add(dirLight);
 
-    // モデル全体が画角に収まるようバウンディングボックスからカメラ距離を決定する
+    // モデル全体(頭のてっぺんから足元まで)が余白付きで画角に収まるよう、
+    // バウンディングボックスの縦横サイズからカメラ距離を計算する。
+    // (以前は近似的にmaxDim*1.5という固定倍率で距離を決めていたため、
+    //  実際にはFOV28度では縦方向の収まりが約75%にしかならず、頭や足が
+    //  フレームからはみ出して見切れてしまっていた。今回はFOVと縦横の
+    //  実寸法から必要な距離を三角関数で正しく逆算し、さらに余白
+    //  (paddingFactor)を持たせることで頭が切れないようにする。)
     const box = new THREE.Box3().setFromObject(vrm.scene);
     const dimensions = new THREE.Vector3();
     box.getSize(dimensions);
     const center = new THREE.Vector3();
     box.getCenter(center);
-    const maxDim = Math.max(dimensions.x, dimensions.y, dimensions.z) || 1;
 
-    const camera = new THREE.PerspectiveCamera(28, 1, 0.05, 50);
-    camera.position.set(center.x, center.y + dimensions.y * 0.05, center.z + maxDim * 1.5);
+    const height = dimensions.y || 1;
+    const horizontal = Math.max(dimensions.x, dimensions.z) || height * 0.4;
+
+    const fovDeg = 28;
+    const fovRad = (fovDeg * Math.PI) / 180;
+    const paddingFactor = 1.35; // 上下左右にゆとりを持たせ、頭や手足が見切れないようにする
+    const distForHeight = (height * paddingFactor) / 2 / Math.tan(fovRad / 2);
+    const distForWidth = (horizontal * paddingFactor) / 2 / Math.tan(fovRad / 2);
+    const distance = Math.max(distForHeight, distForWidth, height * 0.9);
+
+    const camera = new THREE.PerspectiveCamera(fovDeg, 1, 0.05, 50);
+    camera.position.set(center.x, center.y, center.z + distance);
     camera.lookAt(center);
 
-    renderer.render(scene, camera);
-    const glCanvas = renderer.domElement;
+    // three-vrmはモデルの-Z方向を正面としている。カメラは+Z側に固定した
+    // ままモデル自体をY軸回転させることで、正面/背面/左右の4方向を撮影する。
+    //   down (画面手前=正面): 180度回転させてカメラの方を向かせる
+    //   up   (画面奥=背面)  : 回転させず、モデルの背中をカメラに向ける
+    //   left / right        : 90度ずつ回転させ、左右の側面をカメラに向ける
+    const ROTATIONS = {
+      down: Math.PI,
+      up: 0,
+      left: Math.PI / 2,
+      right: -Math.PI / 2,
+    };
 
-    // 重要: glCanvas(renderer.domElement)は'webgl'コンテキストが紐付いた
-    // canvasであり、一度webglコンテキストを取得したcanvasは二度と
-    // getContext('2d')を取得できない（nullが返る）。Phaser.Textures.addCanvas()
-    // は内部で2Dコンテキスト経由のピクセル読み取り(getImageData等)を行うため、
-    // webgl canvasをそのまま渡すと「Cannot read properties of null
-    // (reading 'getImageData')」で失敗する。
-    // そのため、描画結果を独立した2D canvasへdrawImageでコピーしてから返す。
-    const canvas2d = document.createElement('canvas');
-    canvas2d.width = size;
-    canvas2d.height = size;
-    const ctx2d = canvas2d.getContext('2d');
-    ctx2d.drawImage(glCanvas, 0, 0, size, size);
+    const result = {};
+    for (const [facing, rotY] of Object.entries(ROTATIONS)) {
+      vrm.scene.rotation.y = rotY;
+      vrm.update(0);
+      renderer.render(scene, camera);
+      const glCanvas = renderer.domElement;
+
+      // 重要: glCanvas(renderer.domElement)は'webgl'コンテキストが紐付いた
+      // canvasであり、一度webglコンテキストを取得したcanvasは二度と
+      // getContext('2d')を取得できない（nullが返る）。Phaser.Textures.addCanvas()
+      // は内部で2Dコンテキスト経由のピクセル読み取り(getImageData等)を行うため、
+      // webgl canvasをそのまま渡すと「Cannot read properties of null
+      // (reading 'getImageData')」で失敗する。
+      // そのため、描画結果を独立した2D canvasへdrawImageでコピーしてから使う。
+      const canvas2d = document.createElement('canvas');
+      canvas2d.width = size;
+      canvas2d.height = size;
+      canvas2d.getContext('2d').drawImage(glCanvas, 0, 0, size, size);
+      result[facing] = canvas2d;
+      onProgress(`rendered-${facing}`);
+    }
 
     renderer.dispose();
 
-    console.log('[VRMSystem] スナップショットの描画が完了しました。', { size, boxDimensions: dimensions });
+    console.log('[VRMSystem] 4方向のスナップショット描画が完了しました。', { size, boxDimensions: dimensions, distance });
     onProgress('done');
-    return canvas2d;
+    return result;
   }
 }
 

@@ -1,47 +1,44 @@
 /**
  * Player.js
  * ------------------------------------------------------------
- * プレイヤーキャラクターのロジックと描画を管理するクラス。
+ * プレイヤーキャラクターの「ロジック」を管理するクラス。
  * グリッド単位で移動し、1マス移動は必ず完了してから次の入力を
  * 受け付ける「ボンバーマン式」の移動方式を採用する。
  *
- * VRM対応は開発ルール8に基づき本クラスから分離する予定。
- * 本フェーズでは色違いくまっち相当のプレースホルダー描画のみ行い、
- * 将来 VRMSystem からスプライト/モデルを差し替えられるよう
- * `setDisplayObject()` の口を用意しておく。
+ * サイコロ6面ステージ対応にあたり、本クラスは見た目(Phaser/Three.js
+ * いずれの描画オブジェクトも)を直接保持しない「純粋なロジック+状態」の
+ * クラスに変更した（開発ルール9: 描画とロジックの分離を徹底）。
+ * 実際の見た目(色付き四角・VRMスナップショット・3Dメッシュ等)は
+ * 呼び出し側(GameScene / CubeRenderer)がPlayerの公開プロパティ
+ * (face/col/row/facing/isAlive/getMoveProgress()等)を読み取って
+ * 描画する。これによりPhaser専用の2D描画とThree.js製の3D描画を
+ * 同じPlayerロジックで共用できる。
  * ------------------------------------------------------------
  */
 import {
-  TILE_SIZE,
   PLAYER_MOVE_DURATION_MS,
   PLAYER_DEFAULT_LIVES,
   BOMB_INITIAL_COUNT,
   BLAST_INITIAL_RANGE,
-  PLAYER_COLORS,
-  DEPTH,
 } from '../constants/GameConstants.js';
-import { Collision } from '../utils/Collision.js';
 
-const DIRECTION_VECTORS = Object.freeze({
-  up: { dCol: 0, dRow: -1 },
-  down: { dCol: 0, dRow: 1 },
-  left: { dCol: -1, dRow: 0 },
-  right: { dCol: 1, dRow: 0 },
-});
+const DIRECTIONS = ['up', 'down', 'left', 'right'];
 
 let nextPlayerInstanceId = 1;
 
 export class Player {
   /**
-   * @param {Phaser.Scene} scene
-   * @param {Stage} stage
+   * @param {Phaser.Scene} scene - 時間管理(scene.time.now/delayedCall)のみに使用
+   * @param {CubeStage} stage - 6面キューブステージ(resolveMove/isWalkable等を提供)
+   * @param {string} startFace - 開始する面(CUBE_FACE_NAMESのいずれか)
    * @param {number} startCol
    * @param {number} startRow
    * @param {object} options - { colorIndex, isAI, playerId }
    */
-  constructor(scene, stage, startCol, startRow, options = {}) {
+  constructor(scene, stage, startFace, startCol, startRow, options = {}) {
     this.scene = scene;
     this.stage = stage;
+    this.face = startFace;
     this.col = startCol;
     this.row = startRow;
     this.playerId = options.playerId ?? nextPlayerInstanceId++;
@@ -61,43 +58,19 @@ export class Player {
     this.isMoving = false;
     this.facing = 'down';
 
+    // --- 見た目の補間用(レンダラーが読み取る。Playerはこの値を書くだけ) ---
+    this._prevFace = startFace;
+    this._prevCol = startCol;
+    this._prevRow = startRow;
+    this._moveStartAt = 0;
+    this._moveDurationMs = PLAYER_MOVE_DURATION_MS;
+
     // --- 集計データ（リザルト画面・勝敗判定用） ---
     this.stats = {
       kills: 0, // 撃破数
       bombsExploded: 0, // 爆破数
       itemsCollected: 0, // 取得アイテム数
     };
-
-    this._createSprite();
-  }
-
-  _createSprite() {
-    const { x, y } = Collision.toPixel(this.col, this.row);
-    const color = this._colorNameToHex(PLAYER_COLORS[this.colorIndex % PLAYER_COLORS.length]);
-
-    // TODO(Phase3): VRMSystem経由でモデル/スプライトを差し替え可能にする。
-    this.displayObject = this.scene.add.rectangle(x, y, TILE_SIZE - 10, TILE_SIZE - 10, color);
-    this.displayObject.setDepth(DEPTH.PLAYER);
-    this.displayObject.setStrokeStyle(2, 0x000000, 0.4);
-  }
-
-  _colorNameToHex(name) {
-    const map = {
-      red: 0xe74c3c,
-      blue: 0x3498db,
-      yellow: 0xf1c40f,
-      green: 0x2ecc71,
-      black: 0x2c3e50,
-      white: 0xecf0f1,
-    };
-    return map[name] ?? 0xffffff;
-  }
-
-  /** 将来VRM等でモデルを差し替えるためのフック */
-  setDisplayObject(newDisplayObject) {
-    this.displayObject?.destroy();
-    this.displayObject = newDisplayObject;
-    this.displayObject.setDepth(DEPTH.PLAYER);
   }
 
   get isInvincible() {
@@ -106,43 +79,56 @@ export class Player {
 
   /**
    * 指定方向への移動を試みる。既に移動中の場合や壁・ブロック・爆弾で
-   * 塞がれている場合は何もしない。
+   * 塞がれている場合は何もしない。面の端まで到達している場合は
+   * CubeStage.resolveMove()経由で隣接する面へ乗り移る。
    * @param {'up'|'down'|'left'|'right'} direction
-   * @param {(col:number,row:number)=>boolean} isTileBlockedByBomb - 爆弾による移動阻害チェック
+   * @param {(face:string,col:number,row:number)=>boolean} isTileBlockedByBomb - 爆弾による移動阻害チェック
    */
   tryMove(direction, isTileBlockedByBomb = () => false) {
     if (!this.isAlive || this.isMoving) return false;
+    if (!DIRECTIONS.includes(direction)) return false;
 
-    const vector = DIRECTION_VECTORS[direction];
-    if (!vector) return false;
-    this.facing = direction;
+    const resolved = this.stage.resolveMove(this.face, this.col, this.row, direction);
+    if (!resolved) return false;
 
-    const targetCol = this.col + vector.dCol;
-    const targetRow = this.row + vector.dRow;
-
-    if (!this.stage.isWalkable(targetCol, targetRow, { canPassSoftBlock: this.canPassSoftBlock })) {
+    if (!this.stage.isWalkable(resolved.face, resolved.col, resolved.row, { canPassSoftBlock: this.canPassSoftBlock })) {
+      // 壁にぶつかって進めない場合でも、体の向きだけは変える（従来の仕様を踏襲）
+      this.facing = direction;
       return false;
     }
-    if (isTileBlockedByBomb(targetCol, targetRow)) {
+    if (isTileBlockedByBomb(resolved.face, resolved.col, resolved.row)) {
+      this.facing = direction;
       return false;
     }
+
+    this._prevFace = this.face;
+    this._prevCol = this.col;
+    this._prevRow = this.row;
 
     this.isMoving = true;
-    this.col = targetCol;
-    this.row = targetRow;
-    const { x, y } = Collision.toPixel(targetCol, targetRow);
-    const duration = PLAYER_MOVE_DURATION_MS / this.speedMultiplier;
+    this.face = resolved.face;
+    this.col = resolved.col;
+    this.row = resolved.row;
+    this.facing = resolved.facing;
 
-    this.scene.tweens.add({
-      targets: this.displayObject,
-      x,
-      y,
-      duration,
-      onComplete: () => {
-        this.isMoving = false;
-      },
+    this._moveStartAt = this.scene.time.now;
+    this._moveDurationMs = PLAYER_MOVE_DURATION_MS / this.speedMultiplier;
+    this.scene.time.delayedCall(this._moveDurationMs, () => {
+      this.isMoving = false;
     });
     return true;
+  }
+
+  /**
+   * 現在の見た目の移動進捗を0(移動元)〜1(移動先=現在のface/col/row)で返す。
+   * レンダラーが _prevFace/_prevCol/_prevRow と face/col/row の間を
+   * 補間してなめらかな移動アニメーションを描くために使う。
+   * 移動中でなければ常に1(=補間不要、現在地そのまま)を返す。
+   */
+  getMoveProgress(now = this.scene.time.now) {
+    if (!this.isMoving) return 1;
+    const raw = (now - this._moveStartAt) / this._moveDurationMs;
+    return Math.max(0, Math.min(1, raw));
   }
 
   /** 爆弾設置可能かどうか */
@@ -164,7 +150,6 @@ export class Player {
     this.lives -= 1;
     if (this.lives <= 0) {
       this.isAlive = false;
-      this.displayObject?.setAlpha(0.25);
     } else {
       // 被弾後の一時無敵（連続被弾防止）は簡易的に一定時間付与する。
       this.invincibleUntil = this.scene.time.now + 1500;
@@ -173,6 +158,7 @@ export class Player {
   }
 
   destroy() {
-    this.displayObject?.destroy();
+    // 見た目(Phaser/Three.jsオブジェクト)はレンダラー側が所有・破棄するため、
+    // ここでは特にクリーンアップするものはない。
   }
 }
