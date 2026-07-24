@@ -110,3 +110,11 @@ export const DEPTH = Object.freeze({
   PLAYER: 25,
   UI: 100,
 });
+
+// --- サイコロ6面ステージ設定 ---------------------------------------------
+// バトルエリアを1枚の平面マップではなく、立方体(サイコロ)の6つの面を
+// それぞれ独立した平面マップとして持ち、面の端まで移動すると隣接する面へ
+// 乗り移れるようにする（詳細はCubeStage.js/CubeTopology.js参照）。
+export const CUBE_FACE_NAMES = Object.freeze(['FRONT', 'BACK', 'RIGHT', 'LEFT', 'TOP', 'BOTTOM']);
+export const CUBE_FACE_COLS = 11; // 1面あたりの横マス数（奇数推奨：迷路生成の都合上）
+export const CUBE_FACE_ROWS = 11; // 1面あたりの縦マス数（奇数推奨）

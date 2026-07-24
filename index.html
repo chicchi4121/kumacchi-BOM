@@ -8,7 +8,7 @@
     html, body {
       margin: 0;
       padding: 0;
-      background: #111;
+      background: #1e1e1e;
       height: 100%;
       overflow: hidden;
       display: flex;
@@ -17,7 +17,28 @@
       font-family: 'Hiragino Sans', 'Yu Gothic', sans-serif;
     }
     #game-container {
+      position: relative;
       line-height: 0;
+    }
+    /*
+      サイコロ6面ステージ(Phase3)用: Three.jsで3D描画するcanvasを
+      #game-container の下敷きとして重ねる。Phaser側のcanvasは
+      main.jsでtransparent:trueにしてあるため、対戦シーン(GameScene)では
+      このcanvasの3D映像がPhaserのUI/HUDテキストの下に透けて見える。
+      #game-container 内で先に配置しておくことで、Phaserが後から追加する
+      自身のcanvasより下(z-index)に重なる。
+    */
+    #cube-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 0;
+    }
+    .phaser-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
     }
   </style>
   <!-- Phaser 3 (CDN読み込み。ビルドステップなしで軽量に動作させるため) -->
@@ -41,7 +62,15 @@
   </script>
 </head>
 <body>
-  <div id="game-container"></div>
+  <div id="game-container">
+    <!--
+      サイコロ6面ステージ(Phase3)の3D描画用canvas。CubeRenderer.jsが
+      Three.jsでこのcanvasに直接描画する。GameContainer内でPhaserのcanvasより
+      前に置くことで、Phaserのcanvas(transparent:true、HUD/UI用)の下に
+      3D映像が透けて見える。
+    -->
+    <canvas id="cube-canvas"></canvas>
+  </div>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

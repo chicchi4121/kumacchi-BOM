@@ -4,29 +4,28 @@
  * 対戦本編を進行させるメインシーン。
  *
  * Phase1で構築した基盤（マップ生成・移動・爆弾・爆発・当たり判定）に加え、
- * Phase2で以下を実装する:
+ * Phase2で以下を実装している:
  *   ・アイテム出現・取得・効果適用（ItemSystem連携）
  *   ・AI行動（AISystem経由でAI.jsの思考ルーチンを実行、危険地帯の共有）
  *   ・詳細な勝敗判定・順位確定・撃破数等のスコア集計（BattleSystem連携）
  *   ・UI強化（順位・カウントダウン）
  *   ・BGM・効果音（SoundSystem連携）
  *
- * Phase3の第一歩として、人間プレイヤーの見た目をVRMモデルの静止画
- * スナップショットに差し替える機能（VRMSystem連携）を実装している。
- * 必殺技の発動・サイコロ6面ステージ等その他のPhase3要素は未対応。
+ * Phase3では以下を実装している:
+ *   ・人間プレイヤーの見た目をVRMモデルの4方向(正面/背面/左/右)静止画
+ *     スナップショットに差し替える機能（VRMSystem連携）
+ *   ・バトルエリアをサイコロ状(立方体)の6面ステージにする機能。
+ *     ゲームロジック(CubeStage/Player/Bomb/Item/Explosion/AI/BattleSystem)は
+ *     従来通りPhaserに依存しない純粋なロジックとして動作させ、実際の3D描画は
+ *     CubeRenderer.js(Three.js)が別canvas(#cube-canvas)に対して行う。
+ *     Phaser側はHUD/入力/カウントダウン/シーン遷移のみを担当する
+ *     （開発ルール9: 描画とロジックの分離を、2D/3D描画の切り替えにも応用）。
+ *
+ * 必殺技の発動は未対応。
  * ------------------------------------------------------------
  */
-import {
-  SCENE_KEYS,
-  GRID_COLS,
-  GRID_ROWS,
-  TILE_SIZE,
-  DEPTH,
-  COUNTDOWN_STEPS,
-  COUNTDOWN_STEP_MS,
-} from '../constants/GameConstants.js';
-import { Stage } from '../objects/Stage.js';
-import { Block } from '../objects/Block.js';
+import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT, DEPTH, COUNTDOWN_STEPS, COUNTDOWN_STEP_MS } from '../constants/GameConstants.js';
+import { CubeStage } from '../objects/CubeStage.js';
 import { Player } from '../objects/Player.js';
 import { Bomb } from '../objects/Bomb.js';
 import { Explosion } from '../objects/Explosion.js';
@@ -36,6 +35,7 @@ import { ItemSystem } from '../systems/ItemSystem.js';
 import { BattleSystem } from '../systems/BattleSystem.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { vrmSystem } from '../systems/VRMSystem.js';
+import { CubeRenderer } from '../systems/CubeRenderer.js';
 
 const DEFAULT_VRM_PATH = 'assets/vrm/kumacchi.vrm';
 
@@ -58,11 +58,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.stage = new Stage(GRID_COLS, GRID_ROWS);
+    // このシーンでは実際の見た目(ブロック/プレイヤー/爆弾/アイテム)を
+    // CubeRenderer(Three.js)が描画するため、Bomb/Item側で独自にPhaser用の
+    // スプライトを作らせないようにするフラグ。
+    this.render3D = true;
+
+    this.stage = new CubeStage();
     const totalParticipants = Math.min(6, this.config.playerCount + this.config.aiCount);
     this.stage.generate(totalParticipants);
 
-    this.blockSprites = this._renderBlocks(this.stage);
     this.bombs = [];
     this.items = [];
 
@@ -82,17 +86,50 @@ export class GameScene extends Phaser.Scene {
     this._sceneActive = true;
     this.events.once('shutdown', () => {
       this._sceneActive = false;
+      this.cubeRenderer?.dispose();
     });
+
+    // 3D描画(Three.js)の初期化は非同期(CDN読込あり)。ゲームロジック側
+    // (移動・爆弾・カウントダウン等)はこれを待たずに進行できるようにする。
+    this._cubeRendererReadyPromise = this._initCubeRenderer();
 
     this._startCountdown();
     this._loadHumanVrmAppearance();
   }
 
   /**
-   * 人間プレイヤーの見た目をVRMモデルのスナップショットに差し替える。
-   * タイトル画面でカスタムVRMがアップロードされていればそれを、
+   * サイコロ6面ステージの3D描画(Three.js)を初期化する。
+   * #cube-canvas(index.html参照)にThree.jsのWebGLRendererを構築し、
+   * 現在のCubeStageの内容から立方体シーンを組み立てる。
+   * CDN読込を含むため失敗しうる。失敗してもゲームロジック自体は継続できる
+   * （3Dの見た目が表示されないだけになる）よう、例外を握りつぶして
+   * コンソールに記録するに留める。
+   */
+  async _initCubeRenderer() {
+    const canvas = document.getElementById('cube-canvas');
+    if (!canvas) {
+      console.error('[GameScene] #cube-canvas が見つかりません。3D描画は行われません。');
+      return;
+    }
+    this.cubeRenderer = new CubeRenderer(canvas);
+    try {
+      await this.cubeRenderer.init(this.stage);
+      this.scale.on('resize', () => this.cubeRenderer?.resize());
+      if (this.humanPlayer) this.cubeRenderer.followFace(this.humanPlayer.face);
+      console.log('[GameScene] サイコロ6面ステージの3D描画(Three.js)を初期化しました。');
+    } catch (e) {
+      console.error(
+        '[GameScene] 3D描画(Three.js)の初期化に失敗しました。CDNへの到達やindex.htmlのimport map設定をご確認ください。',
+        e
+      );
+    }
+  }
+
+  /**
+   * 人間プレイヤーの見た目をVRMモデルの4方向(正面/背面/左/右)スナップショットに
+   * 差し替える。タイトル画面でカスタムVRMがアップロードされていればそれを、
    * なければ同梱のデフォルトVRM(assets/vrm/kumacchi.vrm)を使用する。
-   * 読込・描画に失敗した場合は何もせず、デフォルトの色付き四角のままにする
+   * 読込・描画に失敗した場合は何もせず、デフォルトの色付き見た目のままにする
    * （開発ルール8: VRM対応の有無がゲームロジックに影響しないこと）。
    *
    * 進行状況・失敗時のエラーは画面右上に小さく表示する（ブラウザの
@@ -100,7 +137,7 @@ export class GameScene extends Phaser.Scene {
    */
   async _loadHumanVrmAppearance() {
     const statusText = this.add
-      .text(GRID_COLS * TILE_SIZE - 10, 10, 'VRM読み込み中...', {
+      .text(SCREEN_WIDTH - 10, 10, 'VRM読み込み中...', {
         fontSize: '13px',
         color: '#88ddaa',
         backgroundColor: '#000000aa',
@@ -144,25 +181,18 @@ export class GameScene extends Phaser.Scene {
       });
       if (!this._sceneActive || !this.humanPlayer?.isAlive) return;
 
-      // 4方向(up/down/left/right)ぶんのテクスチャをPhaserに登録し、
-      // 移動方向(Player.facing)に応じてupdate()内で差し替えられるようにする。
-      this._vrmTextureKeys = {};
-      for (const facing of Object.keys(snapshotSet)) {
-        const textureKey = `vrm_snapshot_player1_${facing}`;
-        if (this.textures.exists(textureKey)) this.textures.remove(textureKey);
-        this.textures.addCanvas(textureKey, snapshotSet[facing]);
-        this._vrmTextureKeys[facing] = textureKey;
+      // 3D描画側(CubeRenderer)の初期化が終わるまで待ってからテクスチャを渡す
+      await this._cubeRendererReadyPromise;
+      if (!this._sceneActive || !this.cubeRenderer?.ready) {
+        setStatus('VRM: 3D描画が未初期化のため反映を保留しました', '#ffcc66');
+        return;
       }
 
-      const { x, y } = this.humanPlayer.displayObject;
-      const initialFacing = this.humanPlayer.facing ?? 'down';
-      const image = this.add.image(x, y, this._vrmTextureKeys[initialFacing] ?? this._vrmTextureKeys.down);
-      // 見切れ対策で余白を持たせたスナップショットに合わせ、表示サイズもやや
-      // 小さめにしてタイルからはみ出さないようにする。
-      image.setDisplaySize(TILE_SIZE - 12, TILE_SIZE - 12);
-      this.humanPlayer.setDisplayObject(image);
-      this._vrmImage = image;
-      this._vrmLastFacing = initialFacing;
+      const textureSet = {};
+      for (const facing of Object.keys(snapshotSet)) {
+        textureSet[facing] = this.cubeRenderer.createCanvasTexture(snapshotSet[facing]);
+      }
+      this.cubeRenderer.setHumanTextures(this.humanPlayer.playerId, textureSet);
 
       setStatus('VRM: 表示中', '#88ddaa');
       this.time.delayedCall(2000, () => statusText?.destroy());
@@ -172,35 +202,6 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /**
-   * VRMの見た目を移動方向(Player.facing)に応じて差し替える。
-   * up/down/left/rightの4方向ぶんのテクスチャが読み込み済みの場合のみ
-   * 動作し、そうでなければ何もしない(デフォルトの色付き四角のまま)。
-   */
-  _updateVrmFacing() {
-    if (!this._vrmImage || !this._vrmTextureKeys || !this.humanPlayer?.isAlive) return;
-    const facing = this.humanPlayer.facing;
-    if (facing === this._vrmLastFacing) return;
-    const textureKey = this._vrmTextureKeys[facing];
-    if (!textureKey) return;
-    this._vrmImage.setTexture(textureKey);
-    this._vrmLastFacing = facing;
-  }
-
-  /** Stage.gridの内容に合わせてBlockオブジェクトを生成する */
-  _renderBlocks(stage) {
-    const sprites = [];
-    for (let row = 0; row < stage.rows; row++) {
-      const line = [];
-      for (let col = 0; col < stage.cols; col++) {
-        const type = stage.getBlockType(col, row);
-        line.push(new Block(this, col, row, type));
-      }
-      sprites.push(line);
-    }
-    return sprites;
-  }
-
   _createPlayers(totalParticipants) {
     const startPositions = this.stage.getStartPositions();
     this.players = [];
@@ -208,7 +209,7 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < totalParticipants; i++) {
       const pos = startPositions[i] ?? startPositions[0];
       const isHuman = i === 0; // Phase1〜2: 操作可能なのは1人目のみ（ローカル対戦の複数キーマップは将来対応）
-      const player = new Player(this, this.stage, pos.col, pos.row, {
+      const player = new Player(this, this.stage, pos.face, pos.col, pos.row, {
         colorIndex: i,
         isAI: !isHuman,
         playerId: i + 1,
@@ -220,7 +221,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   _createHud() {
-    const hudY = GRID_ROWS * TILE_SIZE + 10;
+    const hudY = SCREEN_HEIGHT - 54;
     this.hudText = this.add.text(10, hudY, '', {
       fontSize: '16px',
       color: '#ffffff',
@@ -246,8 +247,8 @@ export class GameScene extends Phaser.Scene {
   /** 試合開始前の「3・2・1・START」カウントダウン演出。終了までプレイヤー/AIの行動を止める */
   _startCountdown() {
     this.countdownActive = true;
-    const centerX = GRID_COLS * TILE_SIZE / 2;
-    const centerY = GRID_ROWS * TILE_SIZE / 2;
+    const centerX = SCREEN_WIDTH / 2;
+    const centerY = (SCREEN_HEIGHT - 64) / 2;
 
     this.countdownText = this.add
       .text(centerX, centerY, '', { fontSize: '64px', color: '#ffffff', fontStyle: 'bold' })
@@ -273,32 +274,35 @@ export class GameScene extends Phaser.Scene {
     this.scene.pause();
   }
 
-  /** 指定タイルに未爆発の爆弾があるかどうか（移動阻害・設置阻害の判定に使用） */
-  _isTileOccupiedByBomb(col, row) {
-    return this.bombs.some((b) => !b.detonated && b.col === col && b.row === row);
+  /** 指定の面・タイルに未爆発の爆弾があるかどうか（移動阻害・設置阻害の判定に使用） */
+  _isTileOccupiedByBomb(face, col, row) {
+    return this.bombs.some((b) => !b.detonated && b.face === face && b.col === col && b.row === row);
   }
 
   _tryPlaceBomb(player) {
     if (!player || !player.isAlive) return;
     if (!player.canPlaceBomb()) return;
-    if (this._isTileOccupiedByBomb(player.col, player.row)) return;
-    // 壁(通り抜けられる壁)の中に立っている間は爆弾を設置できない
-    if (!this.stage.canPlaceBombAt(player.col, player.row)) return;
+    if (this._isTileOccupiedByBomb(player.face, player.col, player.row)) return;
+    // 壊せる壁(👻取得済みで中に入り込んでいる)の中に立っている間は爆弾を設置できない
+    if (!this.stage.canPlaceBombAt(player.face, player.col, player.row)) return;
 
-    const bomb = new Bomb(this, player.col, player.row, {
+    const bomb = new Bomb(this, player.face, player.col, player.row, {
       ownerId: player.playerId,
       blastRange: player.blastRange,
       onDetonate: (b) => this._onBombDetonate(b),
     });
     this.bombs.push(bomb);
+    this.cubeRenderer?.addBomb(bomb);
     player.onBombPlaced();
     soundSystem.playSE('bomb_place');
   }
 
   _onBombDetonate(bomb) {
     const isChainReaction = bomb._chainTriggered === true;
-    const { tiles, broken } = Explosion.computeBlastTiles(this.stage, bomb.col, bomb.row, bomb.blastRange);
-    Explosion.render(this, tiles);
+    const faceStage = this.stage.getFaceStage(bomb.face);
+    const { tiles, broken } = Explosion.computeBlastTiles(faceStage, bomb.col, bomb.row, bomb.blastRange);
+    this.cubeRenderer?.showExplosion(bomb.face, tiles, this.time.now);
+    this.cubeRenderer?.removeBomb(bomb);
     soundSystem.playSE(isChainReaction ? 'chain_explosion' : 'explosion');
 
     const owner = this.players.find((p) => p.playerId === bomb.ownerId);
@@ -306,16 +310,17 @@ export class GameScene extends Phaser.Scene {
 
     // 破壊されたブロックの見た目を更新し、アイテム入りブロックだった場合はアイテムを出現させる
     for (const b of broken) {
-      const blockObj = this.blockSprites[b.row]?.[b.col];
-      blockObj?.destroy();
+      this.cubeRenderer?.removeBlockAt(bomb.face, b.col, b.row);
       if (b.spawnItem && b.itemType) {
-        this.items.push(new Item(this, b.col, b.row, b.itemType));
+        const item = new Item(this, bomb.face, b.col, b.row, b.itemType);
+        this.items.push(item);
+        this.cubeRenderer?.addItem(item);
       }
     }
 
-    // 爆風が届いたマスにいるプレイヤーへダメージ
+    // 爆風が届いたマス(同じ面のみ)にいるプレイヤーへダメージ
     for (const player of this.players) {
-      if (!player.isAlive) continue;
+      if (!player.isAlive || player.face !== bomb.face) continue;
       const hit = tiles.some((t) => t.col === player.col && t.row === player.row);
       if (!hit) continue;
 
@@ -327,9 +332,9 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // 爆風が届いたマスにある他の爆弾を誘爆させる（連鎖爆発）
+    // 爆風が届いたマス(同じ面のみ)にある他の爆弾を誘爆させる（連鎖爆発）
     for (const other of this.bombs) {
-      if (other === bomb || other.detonated) continue;
+      if (other === bomb || other.detonated || other.face !== bomb.face) continue;
       const hit = tiles.some((t) => t.col === other.col && t.row === other.row);
       if (hit) {
         other._chainTriggered = true;
@@ -347,10 +352,11 @@ export class GameScene extends Phaser.Scene {
     const dangerTiles = new Set();
     for (const bomb of this.bombs) {
       if (bomb.detonated) continue;
-      const { tiles } = Explosion.computeBlastTiles(this.stage, bomb.col, bomb.row, bomb.blastRange, {
+      const faceStage = this.stage.getFaceStage(bomb.face);
+      const { tiles } = Explosion.computeBlastTiles(faceStage, bomb.col, bomb.row, bomb.blastRange, {
         dryRun: true,
       });
-      for (const t of tiles) dangerTiles.add(`${t.col},${t.row}`);
+      for (const t of tiles) dangerTiles.add(`${bomb.face}:${t.col},${t.row}`);
     }
     return dangerTiles;
   }
@@ -361,12 +367,13 @@ export class GameScene extends Phaser.Scene {
 
     for (const player of this.players) {
       if (!player.isAlive || player.isMoving) continue;
-      const index = this.items.findIndex((it) => it.col === player.col && it.row === player.row);
+      const index = this.items.findIndex((it) => it.face === player.face && it.col === player.col && it.row === player.row);
       if (index === -1) continue;
 
       const item = this.items[index];
       ItemSystem.applyItem(player, item.type, this);
       player.stats.itemsCollected++;
+      this.cubeRenderer?.removeItem(item);
       item.destroy();
       this.items.splice(index, 1);
       soundSystem.playSE('item_get');
@@ -377,7 +384,6 @@ export class GameScene extends Phaser.Scene {
     if (this.countdownActive) return;
 
     this._handleMovementInput();
-    this._updateVrmFacing();
 
     const dangerTiles = this._computeDangerTiles();
     this.aiSystem.update(time, delta, {
@@ -393,6 +399,12 @@ export class GameScene extends Phaser.Scene {
 
     this.battleSystem.update(delta);
     this._updateHud();
+
+    if (this.cubeRenderer?.ready) {
+      this.cubeRenderer.syncPlayers(this.players, time);
+      if (this.humanPlayer) this.cubeRenderer.followFace(this.humanPlayer.face);
+      this.cubeRenderer.render(time);
+    }
 
     if (this.battleSystem.isOver && !this.resultTriggered) {
       this.resultTriggered = true;
@@ -417,7 +429,7 @@ export class GameScene extends Phaser.Scene {
 
   _handleMovementInput() {
     if (!this.humanPlayer || !this.humanPlayer.isAlive) return;
-    const isBlockedByBomb = (col, row) => this._isTileOccupiedByBomb(col, row);
+    const isBlockedByBomb = (face, col, row) => this._isTileOccupiedByBomb(face, col, row);
 
     if (this.cursors.up.isDown) {
       this.humanPlayer.tryMove('up', isBlockedByBomb);
@@ -439,6 +451,7 @@ export class GameScene extends Phaser.Scene {
 
     this.hudText.setText(
       [
+        `面: ${this.humanPlayer.face}`,
         `残機: ${this.humanPlayer.lives}`,
         `爆弾: ${this.humanPlayer.activeBombCount}/${this.humanPlayer.maxBombs}`,
         `爆風: ${this.humanPlayer.blastRange}`,
