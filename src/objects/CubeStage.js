@@ -46,6 +46,23 @@ export class CubeStage {
       this.faces[name] = new Stage(cols, rows);
     }
     this.startPositions = [];
+
+    // 面の四隅・approachマス(計8マス)の一覧と、それぞれのマスから面を
+    // またぐ移動を起こせる方向(crossDirs)。全面同サイズ・同レイアウト
+    // なので面をまたいでも(col,row)だけで共通に引ける一覧として持つ。
+    const lastCol = cols - 1;
+    const lastRow = rows - 1;
+    this._notchList = [
+      { col: 0, row: 0, crossDirs: ['up', 'left'] },
+      { col: 1, row: 0, crossDirs: ['up'] },
+      { col: lastCol, row: 0, crossDirs: ['up', 'right'] },
+      { col: lastCol - 1, row: 0, crossDirs: ['up'] },
+      { col: 0, row: lastRow, crossDirs: ['down', 'left'] },
+      { col: 1, row: lastRow, crossDirs: ['down'] },
+      { col: lastCol, row: lastRow, crossDirs: ['down', 'right'] },
+      { col: lastCol - 1, row: lastRow, crossDirs: ['down'] },
+    ];
+    this._notchByKey = new Map(this._notchList.map((n) => [`${n.col},${n.row}`, n]));
   }
 
   /**
@@ -102,22 +119,41 @@ export class CubeStage {
    * 各面の見た目上の輪郭(サイコロの面の境目)ははっきり残す。
    */
   _openFaceCorners(stage) {
-    const lastCol = stage.cols - 1;
-    const lastRow = stage.rows - 1;
-    // [隅, 隅へ近づくためのapproachマス] のペアを4隅ぶん
-    const notches = [
-      [[0, 0], [1, 0]],
-      [[lastCol, 0], [lastCol - 1, 0]],
-      [[0, lastRow], [1, lastRow]],
-      [[lastCol, lastRow], [lastCol - 1, lastRow]],
-    ];
-    for (const [corner, approach] of notches) {
-      for (const [col, row] of [corner, approach]) {
-        if (stage.getBlockType(col, row) === BLOCK_TYPES.HARD) {
-          stage.setBlockType(col, row, BLOCK_TYPES.SOFT);
-        }
+    for (const { col, row } of this._notchList) {
+      if (stage.getBlockType(col, row) === BLOCK_TYPES.HARD) {
+        stage.setBlockType(col, row, BLOCK_TYPES.SOFT);
       }
     }
+  }
+
+  /**
+   * (face, col, row)が隅・approachマスなら、それを破壊した際に連動して
+   * 開けるべき「隣接する面の対応マス」の一覧を返す。それ以外のマスなら
+   * 空配列を返す。
+   *
+   * 【不具合修正】隅・approachマスを壊せるようにしても、面をまたいだ先
+   * (隣接面)の対応マスがSOFTのまま残っていると、そちらは「爆風が面を
+   * またいで伝播しない」設計上、自分のいる面からは絶対に壊せず、かつ
+   * 👻取得済みでなければ足を踏み入れることもできない
+   * (resolveMove自体は着地先を計算できても、Player.tryMoveのisWalkable
+   * チェックで弾かれてしまう)。つまり自分側だけ壊しても、相手側が塞がった
+   * ままなら実質「その面から一切移動できない」状態になってしまう
+   * (ユーザー報告の不具合そのもの)。
+   * これを解消するため、隅・approachマスが破壊された際は、面をまたいだ
+   * 先の対応マスも(壊せるブロックであれば)同時に破壊し、双方向とも
+   * 即座に通行可能になるようにする(GameScene._onBombDetonateから使用)。
+   */
+  getMirrorCells(face, col, row) {
+    const notch = this._notchByKey.get(`${col},${row}`);
+    if (!notch) return [];
+    const mirrors = [];
+    for (const dir of notch.crossDirs) {
+      const resolved = this.resolveMove(face, col, row, dir);
+      if (resolved && resolved.crossed) {
+        mirrors.push({ face: resolved.face, col: resolved.col, row: resolved.row });
+      }
+    }
+    return mirrors;
   }
 
   getStartPositions() {

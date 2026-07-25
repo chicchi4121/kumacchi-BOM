@@ -138,6 +138,63 @@ console.log('\n== 3b. CubeStage.generate(): 四隅+approachマスが壊せるブ
   );
 }
 
+console.log('\n== 3c. getMirrorCells: 隅・approachマスを壊すと隣接面の対応マスも連動して壊せる ==');
+{
+  // 不具合修正の確認: 隅・approachマスを開放しただけでは、面をまたいだ先
+  // (隣接面)の対応マスがSOFTのまま残り、爆風が面をまたがない設計上そちら
+  // は絶対に壊せず、👻無しでは足を踏み入れることもできず、結果的に
+  // 「その面から一切移動できない」デッドロックになってしまっていた。
+  // getMirrorCellsが返す隣接面の対応マスも連動して破壊することで解消する。
+  const { BLOCK_TYPES } = await import('./src/constants/GameConstants.js');
+  const cube = new CubeStage(11, 11);
+  cube.generate(6);
+
+  // 通常のマス(隅・approach以外)ではミラーは無い
+  check('通常のマスにはミラーが無い', cube.getMirrorCells('FRONT', 5, 5).length === 0);
+
+  // 隅マス(0,0)は2方向(up/left)にまたぐため、ミラーが2つ返る
+  const cornerMirrors = cube.getMirrorCells('FRONT', 0, 0);
+  check('隅マスのミラーは2つ(up方向・left方向それぞれの隣接面)', cornerMirrors.length === 2);
+  check(
+    '隅マスのミラーは2つとも異なる面である',
+    cornerMirrors.length === 2 && cornerMirrors[0].face !== cornerMirrors[1].face
+  );
+  check(
+    '隅マスのミラー先も、その面自身の隅・approachマスの一覧に含まれる(対称性)',
+    cornerMirrors.every((m) => {
+      const mStage = cube.getFaceStage(m.face);
+      const isBorder = m.col === 0 || m.row === 0 || m.col === mStage.cols - 1 || m.row === mStage.rows - 1;
+      // ミラー先も外周上の特別なマス(隅かapproach)であるはず
+      return isBorder;
+    })
+  );
+
+  // approachマス(1,0)は1方向(up)のみなので、ミラーは1つ
+  const approachMirrors = cube.getMirrorCells('FRONT', 1, 0);
+  check('approachマスのミラーは1つ', approachMirrors.length === 1);
+
+  // 実際に爆弾でFRONTの隅を壊すシミュレーション: GameSceneの
+  // _onBombDetonateと同じ処理(breakBlock + getMirrorCellsで連動破壊)を
+  // 模して、隣接面側が本当にSOFTのままだと通行不可 → 連動破壊後は
+  // 通行可能になることを確認する。
+  const frontStage2 = cube.getFaceStage('FRONT');
+  const beforeMirrors = cube.getMirrorCells('FRONT', 0, 0);
+  for (const m of beforeMirrors) {
+    const mStage = cube.getFaceStage(m.face);
+    check(
+      `連動破壊前: 隣接面(${m.face})の対応マスはまだSOFTで通行不可`,
+      mStage.getBlockType(m.col, m.row) === BLOCK_TYPES.SOFT && !mStage.isWalkable(m.col, m.row)
+    );
+  }
+  frontStage2.breakBlock(0, 0); // FRONTの隅を破壊
+  for (const m of beforeMirrors) {
+    const mResult = cube.breakBlock(m.face, m.col, m.row); // GameSceneが呼ぶのと同じ連動破壊
+    check(`連動破壊: 隣接面(${m.face})の対応マスも破壊できる`, mResult.destroyed === true);
+    const mStage = cube.getFaceStage(m.face);
+    check(`連動破壊後: 隣接面(${m.face})の対応マスは通行可能になる`, mStage.isWalkable(m.col, m.row));
+  }
+}
+
 console.log('\n== 4. resolveMove: 面内の通常移動 ==');
 {
   const cube = new CubeStage(11, 11);

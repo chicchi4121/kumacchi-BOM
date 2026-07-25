@@ -316,6 +316,21 @@ export class GameScene extends Phaser.Scene {
         this.items.push(item);
         this.cubeRenderer?.addItem(item);
       }
+      // 面の隅・approachマスを壊した場合は、面をまたいだ先(隣接面)の対応する
+      // マスも連動して破壊する。爆風は面をまたいで伝播しないため、これが無いと
+      // 隣接面側の対応マスが壊せる壁のまま残り、👻無しでは絶対に足を踏み入れ
+      // られず、結果的にその面から一切移動できなくなってしまう(不具合修正)。
+      for (const mirror of this.stage.getMirrorCells(bomb.face, b.col, b.row)) {
+        const mirrorResult = this.stage.breakBlock(mirror.face, mirror.col, mirror.row);
+        if (mirrorResult.destroyed) {
+          this.cubeRenderer?.removeBlockAt(mirror.face, mirror.col, mirror.row);
+          if (mirrorResult.spawnItem && mirrorResult.itemType) {
+            const mirrorItem = new Item(this, mirror.face, mirror.col, mirror.row, mirrorResult.itemType);
+            this.items.push(mirrorItem);
+            this.cubeRenderer?.addItem(mirrorItem);
+          }
+        }
+      }
     }
 
     // 爆風が届いたマス(同じ面のみ)にいるプレイヤーへダメージ
