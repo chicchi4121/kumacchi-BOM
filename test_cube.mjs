@@ -195,6 +195,78 @@ console.log('\n== 3c. getMirrorCells: 隅・approachマスを壊すと隣接面�
   }
 }
 
+console.log('\n== 3d. CubeStage.generate(): PVP(人間2人以上)は同じ面に集まってスタートする ==');
+{
+  // humanCount<=1(従来のAI対戦モード)は完全に元の挙動のまま(1人1面)であること、
+  // humanCount>=2(PVP)は人間プレイヤー全員が同じ面(先頭の面)の別々の安全地帯から
+  // スタートし、残りのAIが別の面に1人ずつ配置されることを確認する。
+  const centerCol = Math.floor(11 / 2);
+  const centerRow = Math.floor(11 / 2);
+
+  // humanCount=1(デフォルト): 従来通り1人1面
+  {
+    const cube = new CubeStage(11, 11);
+    cube.generate(4, 1);
+    check(
+      'humanCount=1なら従来通り参加者ごとに別々の面(4面)に配置される',
+      new Set(cube.getStartPositions().map((p) => p.face)).size === 4
+    );
+    check(
+      'humanCount=1なら開始地点は各面の中央のまま',
+      cube.getStartPositions().every((p) => p.col === centerCol && p.row === centerRow)
+    );
+  }
+
+  // humanCount=3, playerCount=5: 人間3人が同じ面に、AI2人が残りの面に
+  {
+    const cube = new CubeStage(11, 11);
+    cube.generate(5, 3);
+    const positions = cube.getStartPositions();
+    check('開始地点の総数は参加人数ぶん(5)', positions.length === 5);
+
+    const homeFace = CUBE_FACE_NAMES[0];
+    const humanPositions = positions.slice(0, 3);
+    const aiPositions = positions.slice(3);
+
+    check(
+      '人間プレイヤー3人は全員同じ面(先頭の面)からスタートする',
+      humanPositions.every((p) => p.face === homeFace)
+    );
+    check(
+      '人間プレイヤー3人はそれぞれ別々のマスからスタートする(重ならない)',
+      new Set(humanPositions.map((p) => `${p.col},${p.row}`)).size === 3
+    );
+    check(
+      '人間プレイヤーの開始マスはすべて通行可能(安全地帯)',
+      humanPositions.every((p) => cube.isWalkable(p.face, p.col, p.row))
+    );
+    check(
+      'AI2人は人間と同じ面(先頭の面)には配置されず、それぞれ別の面に配置される',
+      aiPositions.every((p) => p.face !== homeFace) && new Set(aiPositions.map((p) => p.face)).size === 2
+    );
+    check(
+      'AIの開始マスは各面の中央で、通行可能(安全地帯)',
+      aiPositions.every((p) => p.col === centerCol && p.row === centerRow && cube.isWalkable(p.face, p.col, p.row))
+    );
+  }
+
+  // humanCount=6, playerCount=6: 全員人間(AI無し)でも同じ面に収まる
+  {
+    const cube = new CubeStage(11, 11);
+    cube.generate(6, 6);
+    const positions = cube.getStartPositions();
+    check('全員人間(6人)でも6箇所の開始地点が生成される', positions.length === 6);
+    check(
+      '全員人間なら全員同じ面からスタートする',
+      positions.every((p) => p.face === CUBE_FACE_NAMES[0])
+    );
+    check(
+      '全員人間の6箇所はそれぞれ別々のマスである(重ならない)',
+      new Set(positions.map((p) => `${p.col},${p.row}`)).size === 6
+    );
+  }
+}
+
 console.log('\n== 4. resolveMove: 面内の通常移動 ==');
 {
   const cube = new CubeStage(11, 11);

@@ -26,20 +26,24 @@ export class ResultScene extends Phaser.Scene {
 
   init(data) {
     this.winnerPlayerId = data?.winner?.playerId ?? null;
-    this.humanPlayerId = data?.humanPlayerId ?? null;
+    // PVP(人間2人以上)では勝敗判定・「あなた」表示の対象が複数人になりうるため配列で保持する。
+    this.humanPlayerIds = data?.humanPlayerIds ?? (data?.humanPlayerId != null ? [data.humanPlayerId] : []);
     this.players = data?.players ?? [];
     this.finalRanks = data?.finalRanks ?? {};
   }
 
   create() {
     const centerX = SCREEN_WIDTH / 2;
-    const isHumanWinner = this.winnerPlayerId !== null && this.winnerPlayerId === this.humanPlayerId;
+    const isHumanWinner = this.winnerPlayerId !== null && this.humanPlayerIds.includes(this.winnerPlayerId);
+    const isPvp = this.humanPlayerIds.length > 1;
     soundSystem.playSE(this.players.length > 0 ? (isHumanWinner ? 'victory' : 'defeat') : 'button');
 
     this.add.text(centerX, 50, 'リザルト', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
 
+    // PVPでは「あなた」という単一人称が成立しないため、勝者が人間なら
+    // その旨だけを添える（例:「勝者: プレイヤー2（プレイヤー）」）。
     const winnerLabel = this.winnerPlayerId
-      ? `勝者: プレイヤー${this.winnerPlayerId}${isHumanWinner ? '（あなた）' : ''}`
+      ? `勝者: プレイヤー${this.winnerPlayerId}${isHumanWinner ? (isPvp ? '（プレイヤー）' : '（あなた）') : ''}`
       : '引き分け';
     this.add.text(centerX, 95, winnerLabel, { fontSize: '22px', color: '#ffe066' }).setOrigin(0.5);
 
@@ -98,7 +102,7 @@ export class ResultScene extends Phaser.Scene {
 
     rows.forEach((row, i) => {
       const y = startY + 28 + i * 26;
-      const isHuman = row.playerId === this.humanPlayerId;
+      const isHuman = this.humanPlayerIds.includes(row.playerId);
       const nameLabel = `プレイヤー${row.playerId}${row.isAI ? '(AI)' : ''}${isHuman ? ' ★' : ''}`;
       const color = isHuman ? '#ffe066' : '#ffffff';
       const values = [`${row.rank}位`, nameLabel, row.stats.kills, row.stats.bombsExploded, row.stats.itemsCollected, row.exp];

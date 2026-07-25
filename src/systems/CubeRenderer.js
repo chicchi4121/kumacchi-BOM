@@ -72,8 +72,7 @@ export class CubeRenderer {
     this._playerMeshes = new Map(); // playerId -> mesh
     this._explosions = []; // { mesh, startedAt }
     this._itemTextureCache = new Map(); // itemType -> CanvasTexture
-    this._humanPlayerId = null;
-    this._humanTextures = null; // { down, up, left, right }: CanvasTexture
+    this._playerTextures = new Map(); // playerId -> { down, up, left, right }: CanvasTexture (人間・AI問わず)
     this._currentFace = null;
   }
 
@@ -185,10 +184,14 @@ export class CubeRenderer {
     return new this._THREE.CanvasTexture(canvas);
   }
 
-  /** 人間プレイヤーのVRM4方向テクスチャを設定する(GameScene._loadHumanVrmAppearance用) */
-  setHumanTextures(playerId, textureSet) {
-    this._humanPlayerId = playerId;
-    this._humanTextures = textureSet;
+  /**
+   * 指定プレイヤーのVRM4方向テクスチャを設定する(人間・AI問わず使用可能)。
+   * GameScene._loadAllVrmAppearances()から、プレイヤー1(操作中の自分)には
+   * 自分のカスタム/デフォルトVRMを、それ以外の全員(AI・2人目以降の人間
+   * プレイヤー)には同梱VRMの色違いテクスチャを設定するために使う。
+   */
+  setPlayerTextures(playerId, textureSet) {
+    this._playerTextures.set(playerId, textureSet);
     const mesh = this._playerMeshes.get(playerId);
     if (mesh) {
       mesh.material.map = textureSet.down;
@@ -201,8 +204,9 @@ export class CubeRenderer {
     const THREE = this._THREE;
     const geom = new THREE.PlaneGeometry(CELL_SIZE * 0.82, CELL_SIZE * 0.82);
     let material;
-    if (player.playerId === this._humanPlayerId && this._humanTextures) {
-      material = new THREE.MeshBasicMaterial({ map: this._humanTextures.down, transparent: true, side: THREE.DoubleSide });
+    const textureSet = this._playerTextures.get(player.playerId);
+    if (textureSet) {
+      material = new THREE.MeshBasicMaterial({ map: textureSet.down, transparent: true, side: THREE.DoubleSide });
     } else {
       const colorName = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
       material = new THREE.MeshBasicMaterial({ color: PLAYER_COLOR_HEX[colorName] ?? 0xffffff, side: THREE.DoubleSide });
@@ -239,8 +243,9 @@ export class CubeRenderer {
         this._playerMeshes.set(player.playerId, mesh);
       }
 
-      if (player.playerId === this._humanPlayerId && this._humanTextures) {
-        const tex = this._humanTextures[player.facing] ?? this._humanTextures.down;
+      const textureSet = this._playerTextures.get(player.playerId);
+      if (textureSet) {
+        const tex = textureSet[player.facing] ?? textureSet.down;
         if (mesh.material.map !== tex) {
           mesh.material.map = tex;
           mesh.material.needsUpdate = true;

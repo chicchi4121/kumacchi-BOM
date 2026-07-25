@@ -189,6 +189,36 @@ export class VRMSystem {
     onProgress('done');
     return result;
   }
+
+  /**
+   * renderSnapshotSet()が返した{down,up,left,right}のcanvasセットから、
+   * 指定のCSS filter(Canvas2D の ctx.filter、例: 'hue-rotate(220deg)')を
+   * 適用した新しいcanvasセットを作って返す（元のセットは変更しない）。
+   *
+   * 敵キャラ(AI・2人目以降の人間プレイヤー)の見た目を、同じVRMモデル
+   * (同梱のkumacchi.vrm)の色違いにするために使う。VRMを毎回それぞれの色で
+   * 再レンダリングする（Three.jsのマテリアル色を差し替える）のはコストが
+   * 高く、VRMごとにマテリアル構成も一定でないため、代わりに「1回だけ
+   * レンダリングした結果を2D canvas上で色調補正する」という軽量な方式を
+   * 採用している（PLAYER_COLOR_FILTERS参照）。
+   *
+   * @param {{down:HTMLCanvasElement, up:HTMLCanvasElement, left:HTMLCanvasElement, right:HTMLCanvasElement}} snapshotSet
+   * @param {string} filterCss - 'none'なら元のcanvasをそのまま複製する
+   * @returns {{down:HTMLCanvasElement, up:HTMLCanvasElement, left:HTMLCanvasElement, right:HTMLCanvasElement}}
+   */
+  tintSnapshotSet(snapshotSet, filterCss = 'none') {
+    const result = {};
+    for (const [facing, srcCanvas] of Object.entries(snapshotSet)) {
+      const tinted = document.createElement('canvas');
+      tinted.width = srcCanvas.width;
+      tinted.height = srcCanvas.height;
+      const ctx = tinted.getContext('2d');
+      ctx.filter = filterCss || 'none';
+      ctx.drawImage(srcCanvas, 0, 0);
+      result[facing] = tinted;
+    }
+    return result;
+  }
 }
 
 // アプリ全体で共有するシングルトン。

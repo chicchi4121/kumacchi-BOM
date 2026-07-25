@@ -24,7 +24,18 @@
  * 必殺技の発動は未対応。
  * ------------------------------------------------------------
  */
-import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT, DEPTH, COUNTDOWN_STEPS, COUNTDOWN_STEP_MS } from '../constants/GameConstants.js';
+import {
+  SCENE_KEYS,
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  DEPTH,
+  COUNTDOWN_STEPS,
+  COUNTDOWN_STEP_MS,
+  PLAYER_COLORS,
+  PLAYER_COLOR_FILTERS,
+  HUMAN_KEY_MAPS,
+  MAX_HUMAN_PLAYERS,
+} from '../constants/GameConstants.js';
 import { CubeStage } from '../objects/CubeStage.js';
 import { Player } from '../objects/Player.js';
 import { Bomb } from '../objects/Bomb.js';
@@ -45,13 +56,20 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * @param {object} data - { mode: 'pvp'|'ai', playerCount, aiCount, timeLimitMs, aiDifficulty }
+   * @param {object} data - { mode: 'pvp'|'ai', playerCount, aiCount, humanCount, timeLimitMs, aiDifficulty }
+   *   timeLimitMsにInfinityを渡すと「制限時間なし」になる(BattleSystemの
+   *   時間切れ判定が自然に発生しなくなる)。
+   *   humanCountは同一キーボードで同時に操作する人間プレイヤーの人数
+   *   (PVP対応。1なら従来通りソロ+AI)。playerCountはhumanCount以上である
+   *   必要がある(LobbyScene側で保証する)。
    */
   init(data) {
+    const playerCount = data?.playerCount ?? 1;
     this.config = {
       mode: data?.mode ?? 'ai',
-      playerCount: data?.playerCount ?? 1,
+      playerCount,
       aiCount: data?.aiCount ?? 2,
+      humanCount: Math.max(1, Math.min(MAX_HUMAN_PLAYERS, data?.humanCount ?? 1, playerCount)),
       timeLimitMs: data?.timeLimitMs ?? 180000,
       aiDifficulty: data?.aiDifficulty ?? 'normal',
     };
@@ -65,7 +83,7 @@ export class GameScene extends Phaser.Scene {
 
     this.stage = new CubeStage();
     const totalParticipants = Math.min(6, this.config.playerCount + this.config.aiCount);
-    this.stage.generate(totalParticipants);
+    this.stage.generate(totalParticipants, this.config.humanCount);
 
     this.bombs = [];
     this.items = [];
@@ -94,7 +112,7 @@ export class GameScene extends Phaser.Scene {
     this._cubeRendererReadyPromise = this._initCubeRenderer();
 
     this._startCountdown();
-    this._loadHumanVrmAppearance();
+    this._loadAllVrmAppearances();
   }
 
   /**
@@ -126,16 +144,27 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * 人間プレイヤーの見た目をVRMモデルの4方向(正面/背面/左/右)スナップショットに
-   * 差し替える。タイトル画面でカスタムVRMがアップロードされていればそれを、
-   * なければ同梱のデフォルトVRM(assets/vrm/kumacchi.vrm)を使用する。
-   * 読込・描画に失敗した場合は何もせず、デフォルトの色付き見た目のままにする
+   * 全プレイヤーの見た目をVRMモデルの4方向(正面/背面/左/右)スナップショットに
+   * 差し替える。
+   *
+   * - プレイヤー1(自分/humanPlayers[0]): タイトル画面でカスタムVRMが
+   *   アップロードされていればそれを、無ければ同梱のデフォルトVRM
+   *   (assets/vrm/kumacchi.vrm)を使用する。
+   * - それ以外の全員(AI、およびPVPの2人目以降の人間プレイヤー): 「敵キャラを
+   *   全部このキャラにしてほしい」という要望に対応し、同梱のデフォルトVRM
+   *   (地の色は赤)を各プレイヤーのPLAYER_COLORS配色(赤/青/黄/緑/黒/白)に
+   *   合わせて色調補正(PLAYER_COLOR_FILTERS)した見た目にする。VRMを色ごとに
+   *   再レンダリングするのはコストが高いため、デフォルトVRMは1回だけ
+   *   レンダリングし、色調補正はCanvas2Dのfilterで軽量に行う
+   *   (VRMSystem.tintSnapshotSet)。
+   *
+   * 読込・描画に失敗した場合は何もせず、デフォルトの色付き四角のままにする
    * （開発ルール8: VRM対応の有無がゲームロジックに影響しないこと）。
    *
    * 進行状況・失敗時のエラーは画面右上に小さく表示する（ブラウザの
    * 開発者コンソールを開かなくても状態がわかるようにするため）。
    */
-  async _loadHumanVrmAppearance() {
+  async _loadAllVrmAppearances() {
     const statusText = this.add
       .text(SCREEN_WIDTH - 10, 10, 'VRM読み込み中...', {
         fontSize: '13px',
@@ -152,34 +181,44 @@ export class GameScene extends Phaser.Scene {
       statusText.setColor(color);
     };
 
+    const progressLabels = {
+      'loading-modules': 'VRM: ライブラリ読込中...',
+      parsing: 'VRM: 解析中...',
+      rendering: 'VRM: 描画中...',
+      'rendered-down': 'VRM: 正面を描画中...',
+      'rendered-up': 'VRM: 背面を描画中...',
+      'rendered-left': 'VRM: 左向きを描画中...',
+      'rendered-right': 'VRM: 右向きを描画中...',
+      done: 'VRM: 読み込み完了',
+    };
+    const onProgress = (stage) => setStatus(progressLabels[stage] ?? 'VRM読み込み中...', '#88ddaa');
+
     try {
-      let arrayBuffer = vrmSystem.customArrayBuffer;
-      if (!arrayBuffer) {
-        console.log(`[GameScene] デフォルトVRM(${DEFAULT_VRM_PATH})を読み込みます。`);
-        const response = await fetch(DEFAULT_VRM_PATH);
-        if (!response.ok) {
-          setStatus(`VRM読み込み失敗 (HTTP ${response.status})`, '#ff8888');
-          return;
-        }
-        arrayBuffer = await response.arrayBuffer();
+      // 敵キャラ(AI・2人目以降の人間プレイヤー)の見た目のベースとして、
+      // 同梱のデフォルトVRMは常に読み込む(自分がカスタムVRMを使っていても、
+      // 敵キャラは常に「kumacchi」キャラの色違いにするため)。
+      console.log(`[GameScene] 敵キャラ用にデフォルトVRM(${DEFAULT_VRM_PATH})を読み込みます。`);
+      let enemyBaseSnapshotSet = null;
+      const response = await fetch(DEFAULT_VRM_PATH);
+      if (response.ok) {
+        const defaultArrayBuffer = await response.arrayBuffer();
+        enemyBaseSnapshotSet = await vrmSystem.renderSnapshotSet(defaultArrayBuffer, 128, onProgress);
       } else {
-        console.log(`[GameScene] アップロード済みVRM(${vrmSystem.customFileName})を使用します。`);
+        console.error(
+          `[GameScene] デフォルトVRMの読み込みに失敗しました (HTTP ${response.status})。敵キャラは色付き四角のままになります。`
+        );
       }
 
-      const snapshotSet = await vrmSystem.renderSnapshotSet(arrayBuffer, 128, (stage) => {
-        const labels = {
-          'loading-modules': 'VRM: ライブラリ読込中...',
-          parsing: 'VRM: 解析中...',
-          rendering: 'VRM: 描画中...',
-          'rendered-down': 'VRM: 正面を描画中...',
-          'rendered-up': 'VRM: 背面を描画中...',
-          'rendered-left': 'VRM: 左向きを描画中...',
-          'rendered-right': 'VRM: 右向きを描画中...',
-          done: 'VRM: 読み込み完了',
-        };
-        setStatus(labels[stage] ?? 'VRM読み込み中...', '#88ddaa');
-      });
-      if (!this._sceneActive || !this.humanPlayer?.isAlive) return;
+      // プレイヤー1(自分): カスタムVRMがあればそれを使う。無ければ、上で
+      // 読み込んだデフォルトVRMのスナップショットをそのまま使い回す
+      // (同じファイルを2回レンダリングしない)。
+      let primarySnapshotSet = enemyBaseSnapshotSet;
+      if (vrmSystem.customArrayBuffer) {
+        console.log(`[GameScene] アップロード済みVRM(${vrmSystem.customFileName})を使用します。`);
+        primarySnapshotSet = await vrmSystem.renderSnapshotSet(vrmSystem.customArrayBuffer, 128, onProgress);
+      }
+
+      if (!this._sceneActive) return;
 
       // 3D描画側(CubeRenderer)の初期化が終わるまで待ってからテクスチャを渡す
       await this._cubeRendererReadyPromise;
@@ -188,11 +227,27 @@ export class GameScene extends Phaser.Scene {
         return;
       }
 
-      const textureSet = {};
-      for (const facing of Object.keys(snapshotSet)) {
-        textureSet[facing] = this.cubeRenderer.createCanvasTexture(snapshotSet[facing]);
+      if (primarySnapshotSet && this.humanPlayer?.isAlive) {
+        const textureSet = {};
+        for (const facing of Object.keys(primarySnapshotSet)) {
+          textureSet[facing] = this.cubeRenderer.createCanvasTexture(primarySnapshotSet[facing]);
+        }
+        this.cubeRenderer.setPlayerTextures(this.humanPlayer.playerId, textureSet);
       }
-      this.cubeRenderer.setHumanTextures(this.humanPlayer.playerId, textureSet);
+
+      if (enemyBaseSnapshotSet) {
+        for (const player of this.players) {
+          if (player === this.humanPlayer || !player.isAlive) continue;
+          const colorName = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
+          const filterCss = PLAYER_COLOR_FILTERS[colorName] ?? 'none';
+          const tintedSet = vrmSystem.tintSnapshotSet(enemyBaseSnapshotSet, filterCss);
+          const textureSet = {};
+          for (const facing of Object.keys(tintedSet)) {
+            textureSet[facing] = this.cubeRenderer.createCanvasTexture(tintedSet[facing]);
+          }
+          this.cubeRenderer.setPlayerTextures(player.playerId, textureSet);
+        }
+      }
 
       setStatus('VRM: 表示中', '#88ddaa');
       this.time.delayedCall(2000, () => statusText?.destroy());
@@ -202,13 +257,18 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * CubeStage.generate(totalParticipants, humanCount)は開始地点配列の先頭
+   * humanCount件を人間プレイヤー用(PVP時は全員同じ面)、残りをAI用として
+   * 順に並べて返すため、そのままインデックスで人間/AIを判定できる。
+   */
   _createPlayers(totalParticipants) {
     const startPositions = this.stage.getStartPositions();
     this.players = [];
 
     for (let i = 0; i < totalParticipants; i++) {
       const pos = startPositions[i] ?? startPositions[0];
-      const isHuman = i === 0; // Phase1〜2: 操作可能なのは1人目のみ（ローカル対戦の複数キーマップは将来対応）
+      const isHuman = i < this.config.humanCount;
       const player = new Player(this, this.stage, pos.face, pos.col, pos.row, {
         colorIndex: i,
         isAI: !isHuman,
@@ -217,30 +277,56 @@ export class GameScene extends Phaser.Scene {
       this.players.push(player);
     }
 
-    this.humanPlayer = this.players[0];
+    // humanPlayers[0]が「プレイヤー1」= カメラが常に追従する基準プレイヤー。
+    // PVP(humanCount>=2)ではhumanPlayers全員が同じ面から一緒にスタートする
+    // ため、プレイヤー1を映しておけば他の人間プレイヤーも同じ面にいる限り
+    // 画面に映る(v1の割り切り: 誰かが単独で他の面へ渡った場合、カメラは
+    // 引き続きプレイヤー1の面だけを映す)。
+    this.humanPlayers = this.players.filter((p) => !p.isAI);
+    this.humanPlayer = this.humanPlayers[0];
   }
 
   _createHud() {
-    const hudY = SCREEN_HEIGHT - 54;
-    this.hudText = this.add.text(10, hudY, '', {
-      fontSize: '16px',
+    // PVP(人間プレイヤー複数)では1人1行になり行数が増えるため、下端固定では
+    // 画面からはみ出す恐れがある。上端からの表示に変更し、下方向へ伸びる
+    // ようにする。
+    this.hudText = this.add.text(10, 10, '', {
+      fontSize: '15px',
       color: '#ffffff',
+      lineSpacing: 4,
     });
     this.hudText.setDepth(DEPTH.UI);
   }
 
+  /**
+   * 人間プレイヤー1人につき1つ、HUMAN_KEY_MAPS(GameConstants.js)の
+   * キー配列を順番に割り当てる(PVP対応: 同一キーボードでのホットシート
+   * 対戦。プレイヤー1=矢印キー+Space、プレイヤー2=WASD+F、
+   * プレイヤー3=IJKL+U、プレイヤー4=テンキー)。
+   * ポーズ(ESC)は全員共通の1つのキーのままにする(誰が押しても一時停止)。
+   */
   _createInput() {
-    this.cursors = this.input.keyboard.createCursorKeys();
-    this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-    this.escKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
-
-    this.spaceKey.on('down', () => {
-      if (this.countdownActive) return;
-      this._tryPlaceBomb(this.humanPlayer);
-    });
+    const KeyCodes = Phaser.Input.Keyboard.KeyCodes;
+    this.escKey = this.input.keyboard.addKey(KeyCodes.ESC);
     this.escKey.on('down', () => {
       if (this.countdownActive) return;
       this._pauseGame();
+    });
+
+    this._humanInputs = this.humanPlayers.map((player, index) => {
+      const map = HUMAN_KEY_MAPS[index] ?? HUMAN_KEY_MAPS[HUMAN_KEY_MAPS.length - 1];
+      const keys = {
+        up: this.input.keyboard.addKey(KeyCodes[map.up]),
+        down: this.input.keyboard.addKey(KeyCodes[map.down]),
+        left: this.input.keyboard.addKey(KeyCodes[map.left]),
+        right: this.input.keyboard.addKey(KeyCodes[map.right]),
+        bomb: this.input.keyboard.addKey(KeyCodes[map.bomb]),
+      };
+      keys.bomb.on('down', () => {
+        if (this.countdownActive) return;
+        this._tryPlaceBomb(player);
+      });
+      return { player, keys };
     });
   }
 
@@ -423,14 +509,15 @@ export class GameScene extends Phaser.Scene {
 
     if (this.battleSystem.isOver && !this.resultTriggered) {
       this.resultTriggered = true;
-      const humanWon = this.battleSystem.winner === this.humanPlayer;
+      // PVP(人間複数)では「人間の誰かが勝ったか」で勝利/敗北SEを選ぶ
+      const humanWon = (this.humanPlayers ?? []).includes(this.battleSystem.winner);
       soundSystem.playSE(humanWon ? 'victory' : 'defeat');
       soundSystem.stopBGM();
 
       this.time.delayedCall(1500, () => {
         this.scene.start(SCENE_KEYS.RESULT, {
           winner: this.battleSystem.winner,
-          humanPlayerId: this.humanPlayer?.playerId,
+          humanPlayerIds: (this.humanPlayers ?? []).map((p) => p.playerId),
           players: this.players.map((p) => ({
             playerId: p.playerId,
             isAI: p.isAI,
@@ -442,38 +529,50 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** 人間プレイヤー全員ぶん、それぞれの割り当てキー(_humanInputs)で移動入力を処理する */
   _handleMovementInput() {
-    if (!this.humanPlayer || !this.humanPlayer.isAlive) return;
     const isBlockedByBomb = (face, col, row) => this._isTileOccupiedByBomb(face, col, row);
 
-    if (this.cursors.up.isDown) {
-      this.humanPlayer.tryMove('up', isBlockedByBomb);
-    } else if (this.cursors.down.isDown) {
-      this.humanPlayer.tryMove('down', isBlockedByBomb);
-    } else if (this.cursors.left.isDown) {
-      this.humanPlayer.tryMove('left', isBlockedByBomb);
-    } else if (this.cursors.right.isDown) {
-      this.humanPlayer.tryMove('right', isBlockedByBomb);
+    for (const { player, keys } of this._humanInputs ?? []) {
+      if (!player.isAlive) continue;
+      if (keys.up.isDown) {
+        player.tryMove('up', isBlockedByBomb);
+      } else if (keys.down.isDown) {
+        player.tryMove('down', isBlockedByBomb);
+      } else if (keys.left.isDown) {
+        player.tryMove('left', isBlockedByBomb);
+      } else if (keys.right.isDown) {
+        player.tryMove('right', isBlockedByBomb);
+      }
     }
   }
 
-  _updateHud() {
-    if (!this.humanPlayer) return;
+  /** 残り時間の表示用文字列。「制限時間なし」(timeLimitMs=Infinity)なら∞と表示する */
+  _formatRemainingTime() {
+    if (!Number.isFinite(this.battleSystem.timeLimitMs)) return '∞';
     const remainingMs = Math.max(0, this.battleSystem.timeLimitMs - this.battleSystem.elapsedMs);
-    const seconds = Math.ceil(remainingMs / 1000);
-    const alive = this.players.filter((p) => p.isAlive).length;
-    const liveRank = this.battleSystem.getLiveRank(this.humanPlayer);
+    return `${Math.ceil(remainingMs / 1000)}s`;
+  }
 
-    this.hudText.setText(
-      [
-        `面: ${this.humanPlayer.face}`,
-        `残機: ${this.humanPlayer.lives}`,
-        `爆弾: ${this.humanPlayer.activeBombCount}/${this.humanPlayer.maxBombs}`,
-        `爆風: ${this.humanPlayer.blastRange}`,
-        `順位: ${liveRank ?? '-'}`,
-        `生存: ${alive}/${this.players.length}`,
-        `残り時間: ${seconds}s`,
-      ].join('   ')
-    );
+  /**
+   * PVP(人間プレイヤーが複数)対応: 全員ぶんのステータスを1行ずつ表示する。
+   * ソロ+AIモード(人間1人)では従来通り1行のみになる。
+   */
+  _updateHud() {
+    if (!this.humanPlayers || this.humanPlayers.length === 0) return;
+    const alive = this.players.filter((p) => p.isAlive).length;
+    const remainingLabel = this._formatRemainingTime();
+
+    const lines = this.humanPlayers.map((player, index) => {
+      const liveRank = this.battleSystem.getLiveRank(player);
+      const label = this.humanPlayers.length > 1 ? `P${index + 1} ` : '';
+      return (
+        `${label}面:${player.face} 残機:${player.lives} ` +
+        `爆弾:${player.activeBombCount}/${player.maxBombs} 爆風:${player.blastRange} 順位:${liveRank ?? '-'}`
+      );
+    });
+    lines.push(`生存: ${alive}/${this.players.length}   残り時間: ${remainingLabel}`);
+
+    this.hudText.setText(lines);
   }
 }

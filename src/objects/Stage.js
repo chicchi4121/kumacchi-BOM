@@ -31,7 +31,9 @@ function tileKey(col, row) {
 
 // プレイヤーの初期出現候補地点（四隅＋上下辺の中央）。
 // 座標は「内側1マス」を基準にしており、外周は必ずHARDブロックで囲む。
-function buildStartCandidates(cols, rows) {
+// CubeStage.js(PVP時に複数の人間プレイヤーを同じ面に集める用途)からも
+// 再利用するためexportしている。
+export function buildStartCandidates(cols, rows) {
   const midCol = Math.floor(cols / 2);
   return [
     { col: 1, row: 1 },

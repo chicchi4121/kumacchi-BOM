@@ -24,7 +24,7 @@
  */
 import { CUBE_FACE_NAMES, CUBE_FACE_COLS, CUBE_FACE_ROWS, MAX_PLAYERS, BLOCK_TYPES } from '../constants/GameConstants.js';
 import { CROSSING_TABLE } from '../constants/CubeTopology.js';
-import { Stage } from './Stage.js';
+import { Stage, buildStartCandidates } from './Stage.js';
 
 const DIRECTION_VECTORS = Object.freeze({
   up: { dCol: 0, dRow: -1 },
@@ -66,33 +66,71 @@ export class CubeStage {
   }
 
   /**
-   * 6面すべての迷路を生成し、面ごとに1箇所ずつ(面の中央)プレイヤーの
-   * 開始地点(安全地帯)を確保する。
+   * 6面すべての迷路を生成し、プレイヤーの開始地点(安全地帯)を確保する。
+   *
    * @param {number} playerCount - 参加人数(最大6、面の数まで)
+   * @param {number} humanCount - 人間プレイヤーの人数(PVP対応)。1なら
+   *   従来通り「参加者1人につき1面、各面の中央からスタート」。2以上なら
+   *   人間プレイヤー全員を`HOME_FACE`(先頭の面)に集めて同じ面から一緒に
+   *   スタートさせ(お互いの姿が見え、カメラも常にその面を映すため対戦
+   *   しやすい)、残りのAIは1人ずつ別の面に配置する。
    */
-  generate(playerCount = 1) {
+  generate(playerCount = 1, humanCount = 1) {
     const centerCol = Math.floor(this.cols / 2);
     const centerRow = Math.floor(this.rows / 2);
 
     for (const name of CUBE_FACE_NAMES) {
       const stage = this.faces[name];
       stage.generate(1);
-      // Stage.generate()は既定では隅(buildStartCandidatesの1番目)を安全地帯に
-      // するため、サイコロステージでは各面の中央をその面の唯一の開始地点として
-      // 使いたいので、中央も追加で安全地帯化し、開始地点情報を上書きする。
-      stage._clearSafeZone(centerCol, centerRow);
-      stage.startPositions = [{ col: centerCol, row: centerRow }];
       // 面の四隅を壊せるブロックとして開放する(下記_openFaceCorners参照)。
       this._openFaceCorners(stage);
     }
 
     const count = Math.max(1, Math.min(MAX_PLAYERS, playerCount, CUBE_FACE_NAMES.length));
-    this.startPositions = CUBE_FACE_NAMES.slice(0, count).map((face) => ({
-      face,
-      col: centerCol,
-      row: centerRow,
-    }));
+    const humans = Math.max(1, Math.min(humanCount, count));
 
+    if (humans <= 1) {
+      // 従来通り: 参加者(AIも含め)1人につき1面、各面の中央が安全地帯。
+      // Stage.generate()は既定では隅(buildStartCandidatesの1番目)を
+      // 安全地帯にするため、サイコロステージでは各面の中央をその面の
+      // 唯一の開始地点として使いたいので、中央も追加で安全地帯化し、
+      // 開始地点情報を上書きする。
+      for (const name of CUBE_FACE_NAMES) {
+        const stage = this.faces[name];
+        stage._clearSafeZone(centerCol, centerRow);
+        stage.startPositions = [{ col: centerCol, row: centerRow }];
+      }
+      this.startPositions = CUBE_FACE_NAMES.slice(0, count).map((face) => ({
+        face,
+        col: centerCol,
+        row: centerRow,
+      }));
+      return this.faces;
+    }
+
+    // PVPモード: 人間プレイヤー全員を同じ面(HOME_FACE)に集める。
+    // buildStartCandidates()は四隅+上下辺中央の最大6箇所を返す
+    // (Stage.jsの通常の複数人対応と同じ座標)。
+    const homeFace = CUBE_FACE_NAMES[0];
+    const homeStage = this.faces[homeFace];
+    const homeCandidates = buildStartCandidates(homeStage.cols, homeStage.rows).slice(0, humans);
+    for (const pos of homeCandidates) homeStage._clearSafeZone(pos.col, pos.row);
+    homeStage.startPositions = homeCandidates;
+
+    const positions = homeCandidates.map((pos) => ({ face: homeFace, col: pos.col, row: pos.row }));
+
+    // 残りのAIは、人間が使っていない面に1人ずつ配置する(従来通り面の中央が安全地帯)。
+    const aiCount = count - humans;
+    const otherFaces = CUBE_FACE_NAMES.slice(1);
+    for (let i = 0; i < aiCount; i++) {
+      const face = otherFaces[i % otherFaces.length];
+      const stage = this.faces[face];
+      stage._clearSafeZone(centerCol, centerRow);
+      stage.startPositions = [{ col: centerCol, row: centerRow }];
+      positions.push({ face, col: centerCol, row: centerRow });
+    }
+
+    this.startPositions = positions;
     return this.faces;
   }
 

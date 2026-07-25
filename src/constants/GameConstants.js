@@ -26,6 +26,33 @@ export const PLAYER_SPEED_BOOST_MULTIPLIER = 1.6; // 👟アイテムの速度�
 export const PLAYER_COLORS = ['red', 'blue', 'yellow', 'green', 'black', 'white'];
 export const MAX_PLAYERS = 6;
 
+// 敵キャラ(AI・2人目以降の人間プレイヤー)の見た目を「同じキャラクター
+// (同梱のkumacchi.vrm、地の色は赤)」の色違いにするためのCanvas2D
+// filterプロパティ用CSS文字列。PLAYER_COLORSの各色に対応する
+// (赤=自分のカスタム/デフォルト見た目そのまま、他の色は色相回転・
+// 彩度/明度調整で作る)。実際の見え方はブラウザでの確認が必要。
+export const PLAYER_COLOR_FILTERS = Object.freeze({
+  red: 'none',
+  blue: 'hue-rotate(220deg) saturate(1.1)',
+  yellow: 'hue-rotate(50deg) saturate(1.2) brightness(1.05)',
+  green: 'hue-rotate(120deg)',
+  black: 'saturate(0.3) brightness(0.3)',
+  white: 'saturate(0.2) brightness(1.9)',
+});
+
+// --- ローカル対戦(PVP)設定 ------------------------------------------
+// 同一キーボードでのホットシート対戦を想定し、最大4人までの人間プレイヤーに
+// 別々のキー割り当てを用意する（5人目以降は物理的なキー競合を避けるのが
+// 難しいため、現状はAI専用とする）。各配列の並びは
+// [up, down, left, right, bomb] のPhaser.Input.Keyboard.KeyCodes名。
+export const MAX_HUMAN_PLAYERS = 4;
+export const HUMAN_KEY_MAPS = Object.freeze([
+  Object.freeze({ up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', bomb: 'SPACE' }), // プレイヤー1: 矢印キー+Space
+  Object.freeze({ up: 'W', down: 'S', left: 'A', right: 'D', bomb: 'F' }), // プレイヤー2: WASD+F
+  Object.freeze({ up: 'I', down: 'K', left: 'J', right: 'L', bomb: 'U' }), // プレイヤー3: IJKL+U
+  Object.freeze({ up: 'NUMPAD_EIGHT', down: 'NUMPAD_TWO', left: 'NUMPAD_FOUR', right: 'NUMPAD_SIX', bomb: 'NUMPAD_ZERO' }), // プレイヤー4: テンキー
+]);
+
 // --- 爆弾設定 -----------------------------------------------------
 export const BOMB_INITIAL_COUNT = 1;
 export const BOMB_MAX_COUNT = 10;
