@@ -302,6 +302,45 @@ export function presenceStateToParticipants(presenceState) {
   return participants;
 }
 
+// ---- オートマッチング(OnlineLobbyScene.js) ---------------------------------
+// 部屋コードのやり取りなしに他プレイヤーと自動的に組み合わせる機能。
+// 固定の合言葉チャンネル(待合ロビー)にpresenceで参加した全員のうち、
+// 参加が一番早い人(joinedAt昇順の先頭)が「リーダー」となって実際の対戦
+// 部屋を作成し、matched対象のclientIdをbroadcastで伝える設計。
+
+/**
+ * 待合ロビーの参加者一覧(参加順)から、今回マッチさせるグループを決める。
+ * 参加順の先頭からmaxPlayers人までを1グループとする(それ以降は次回に持ち越し)。
+ * @param {Array<{clientId:string, joinedAt:number}>} participants - presenceStateToParticipants()の戻り値
+ * @param {number} maxPlayers
+ */
+export function pickAutoMatchGroup(participants, maxPlayers) {
+  return (participants ?? []).slice(0, Math.max(1, maxPlayers));
+}
+
+/**
+ * 待合ロビーの参加者一覧の中で、自分(selfClientId)が今回のグループの
+ * リーダー(実際の対戦部屋を作成する役)かどうかを判定する。
+ * リーダーは常にグループの先頭(参加が一番早い人)。
+ */
+export function isAutoMatchLeader(participants, selfClientId, maxPlayers) {
+  const group = pickAutoMatchGroup(participants, maxPlayers);
+  return group.length > 0 && group[0]?.clientId === selfClientId;
+}
+
+/**
+ * オートマッチングのリーダーが実際の対戦部屋を作成した後、待合ロビーの
+ * 全員に「マッチが成立した」ことを伝えるメッセージ。matchedClientIdsに
+ * 含まれるクライアントだけがこのroomCodeへ参加する(含まれない場合は
+ * 次回のマッチングを待ち続ける)。
+ * @param {string} roomCode - リーダーが新規作成した対戦部屋のコード
+ * @param {Array<string>} matchedClientIds - 今回マッチしたクライアントのID一覧(先頭がホスト=リーダー自身)
+ * @param {object} matchConfig - { humanCount, aiCount, aiDifficulty, timeLimitMs }
+ */
+export function buildAutoMatchFoundMessage(roomCode, matchedClientIds, matchConfig) {
+  return { type: 'auto_match_found', roomCode, matchedClientIds: [...matchedClientIds], config: { ...matchConfig } };
+}
+
 /**
  * 参加者一覧(ホストが先頭に来るよう並べ替え済み)から、
  * clientId -> playerId(1始まり、参加順)のマッピングを作る。

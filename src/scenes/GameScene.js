@@ -451,7 +451,7 @@ export class GameScene extends Phaser.Scene {
     this._updateHud();
     if (this.cubeRenderer?.ready) {
       this.cubeRenderer.syncPlayers(this.players, time);
-      if (this.humanPlayer) this.cubeRenderer.followFace(this.humanPlayer.face);
+      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, time);
       this.cubeRenderer.render(time);
     }
   }
@@ -474,7 +474,9 @@ export class GameScene extends Phaser.Scene {
     try {
       await this.cubeRenderer.init(this.stage);
       this.scale.on('resize', () => this.cubeRenderer?.resize());
-      if (this.humanPlayer) this.cubeRenderer.followFace(this.humanPlayer.face);
+      // 起動直後の初期表示なので、アニメーションさせず即座にその面を正面に向ける
+      // (rotateToFace()だと「何もしていないのに立方体が回る」ように見えてしまう)。
+      if (this.humanPlayer) this.cubeRenderer.snapToFace(this.humanPlayer.face);
       console.log('[GameScene] サイコロ6面ステージの3D描画(Three.js)を初期化しました。');
     } catch (e) {
       console.error(
@@ -874,7 +876,7 @@ export class GameScene extends Phaser.Scene {
 
     if (this.cubeRenderer?.ready) {
       this.cubeRenderer.syncPlayers(this.players, time);
-      if (this.humanPlayer) this.cubeRenderer.followFace(this.humanPlayer.face);
+      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, time);
       this.cubeRenderer.render(time);
     }
 

@@ -26,8 +26,14 @@ create table if not exists public.rankings (
   created_at timestamptz not null default now()
 );
 
--- ランキング表示を軽くするためのインデックス(exp降順で上位N件を取得する)。
+-- ランキング表示を軽くするためのインデックス(exp降順で上位N件を取得する。
+-- 現在は使っていないが、将来expベースの表示に戻す場合のために残してある)。
 create index if not exists rankings_exp_idx on public.rankings (exp desc);
+
+-- 表示ランキングは「プレイヤー名ごとの勝利数」順(クライアント側で集計する
+-- 方式、RankingSystem.js参照)にしたため、直近の対戦ログをまとめて取得する
+-- クエリ(created_at降順)を軽くするインデックスも用意しておく。
+create index if not exists rankings_created_at_idx on public.rankings (created_at desc);
 
 -- Row Level Security(RLS)を有効化する。
 alter table public.rankings enable row level security;

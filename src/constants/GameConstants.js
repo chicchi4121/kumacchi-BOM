@@ -179,3 +179,22 @@ export const CHAR_BLOCK_TYPE = Object.freeze(
 export const CUBE_FACE_NAMES = Object.freeze(['FRONT', 'BACK', 'RIGHT', 'LEFT', 'TOP', 'BOTTOM']);
 export const CUBE_FACE_COLS = 11; // 1面あたりの横マス数（奇数推奨：迷路生成の都合上）
 export const CUBE_FACE_ROWS = 11; // 1面あたりの縦マス数（奇数推奨）
+
+// 面をまたいで移動した際、サイコロが転がったように見えるアニメーションの所要時間。
+// CubeRenderer.jsのrotateToFace()が使う(詳細は同ファイルの解説コメント参照)。
+export const CUBE_ROLL_DURATION_MS = 550;
+
+// --- オートマッチング設定 -------------------------------------------------
+// オンライン対戦の「部屋コードで作成/参加」とは別に、部屋コードのやり取り
+// なしで自動的に他プレイヤーと組み合わせる「オートマッチング」用の設定。
+// 実装(OnlineLobbyScene.js)は、固定の合言葉チャンネル(待合ロビー)に
+// presenceで参加し、参加者が集まる(または一定時間待つ)と、参加順が一番
+// 早いクライアントが実際の対戦部屋を作成して合図を送る、という
+// クライアント主導の簡易マッチングになっている(専用サーバーを持たない
+// 構成のため。ごく稀に複数クライアントがほぼ同時にマッチを成立させる
+// 競合が発生し得る点はREADME.mdに既知の制限として明記している)。
+export const AUTO_MATCH_LOBBY_CODE = 'AUTOMATCH-LOBBY-V1'; // 5文字のランダム部屋コードとは衝突しない固定チャンネル名
+export const AUTO_MATCH_MIN_PLAYERS = 2; // これ未満(=自分一人)の場合は制限時間まで他の参加者を待つ
+export const AUTO_MATCH_WAIT_MS = 8000; // 自分が待合ロビーに参加してから、他の参加者を待つ最大時間
+export const AUTO_MATCH_LEADER_CONFIRM_DELAY_MS = 400; // マッチ確定前の再確認待ち時間(複数クライアントの同時確定を減らす)
+export const AUTO_MATCH_SOLO_AI_COUNT = 3; // 制限時間まで待っても自分一人だった場合に補充するAI人数

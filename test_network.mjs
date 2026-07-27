@@ -57,6 +57,11 @@ const {
   pickDirectionFromKeys,
   buildMoveInputMessage,
   buildBombInputMessage,
+  presenceStateToParticipants,
+  buildClientToPlayerId,
+  pickAutoMatchGroup,
+  isAutoMatchLeader,
+  buildAutoMatchFoundMessage,
 } = await import('./src/systems/NetworkProtocol.js');
 
 console.log('== 1. 部屋コード生成 ==');
@@ -220,6 +225,59 @@ console.log('\n== 5. ゲスト→ホストの入力メッセージ ==');
 
   const bombMsg = buildBombInputMessage(3);
   check('bomb入力メッセージの形式が正しい', bombMsg.type === 'input' && bombMsg.mode === 'bomb' && bombMsg.playerId === 3);
+}
+
+console.log('\n== 6. オートマッチング ==');
+{
+  const participants = [
+    { clientId: 'c_first', isHost: false, joinedAt: 100 },
+    { clientId: 'c_second', isHost: false, joinedAt: 200 },
+    { clientId: 'c_third', isHost: false, joinedAt: 300 },
+  ];
+
+  check('pickAutoMatchGroup: 定員内なら全員がグループに入る', pickAutoMatchGroup(participants, 6).length === 3);
+  check(
+    'pickAutoMatchGroup: 定員を超える分は次回に持ち越される(参加が早い順に切り詰め)',
+    pickAutoMatchGroup(participants, 2).map((p) => p.clientId).join(',') === 'c_first,c_second'
+  );
+  check('pickAutoMatchGroup: 空配列を渡しても例外を投げない', pickAutoMatchGroup([], 6).length === 0);
+
+  check('isAutoMatchLeader: 参加が一番早い人がリーダー', isAutoMatchLeader(participants, 'c_first', 6) === true);
+  check('isAutoMatchLeader: リーダー以外はfalse', isAutoMatchLeader(participants, 'c_second', 6) === false);
+  check(
+    'isAutoMatchLeader: 定員2人グループでは3人目はリーダーになれない(次回のグループの先頭でも今回は対象外)',
+    isAutoMatchLeader(participants, 'c_third', 2) === false
+  );
+  check('isAutoMatchLeader: 参加者0人ならfalse', isAutoMatchLeader([], 'c_first', 6) === false);
+
+  const matchConfig = { humanCount: 3, aiCount: 1, aiDifficulty: 'normal', timeLimitMs: 180000 };
+  const found = buildAutoMatchFoundMessage('ABCDE', ['c_first', 'c_second', 'c_third'], matchConfig);
+  check('auto_match_foundメッセージの種別が正しい', found.type === 'auto_match_found');
+  check('auto_match_foundに部屋コードが含まれる', found.roomCode === 'ABCDE');
+  check(
+    'auto_match_foundにマッチしたクライアントID一覧が含まれる',
+    found.matchedClientIds.length === 3 && found.matchedClientIds[0] === 'c_first'
+  );
+  check('auto_match_foundにマッチ設定が含まれる', found.config.humanCount === 3 && found.config.aiCount === 1);
+
+  // buildClientToPlayerId(既存関数)がオートマッチングのグループにもそのまま使えることを確認
+  const group = pickAutoMatchGroup(participants, 6).map((p, i) => ({ ...p, isHost: i === 0 }));
+  const clientToPlayerId = buildClientToPlayerId(group);
+  check(
+    'オートマッチングのグループでもリーダー(先頭)がplayerId=1になる',
+    clientToPlayerId.c_first === 1 && clientToPlayerId.c_second === 2 && clientToPlayerId.c_third === 3
+  );
+
+  // presenceStateToParticipants(既存関数): Supabaseのpresence生データ形式からの変換も確認しておく
+  const rawPresenceState = {
+    keyA: [{ clientId: 'c_b', isHost: false, joinedAt: 500 }],
+    keyB: [{ clientId: 'c_a', isHost: true, joinedAt: 100 }],
+  };
+  const converted = presenceStateToParticipants(rawPresenceState);
+  check(
+    'presenceStateToParticipants: joinedAt昇順に並ぶ',
+    converted.length === 2 && converted[0].clientId === 'c_a' && converted[1].clientId === 'c_b'
+  );
 }
 
 console.log(`\n合計: ${pass} 件成功 / ${fail} 件失敗`);

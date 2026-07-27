@@ -5,14 +5,16 @@
  * `rankings`テーブル(supabase/schema.sql参照)から取得する。
  * Supabase未設定・取得失敗時はこの端末のローカル対戦履歴を表示する
  * (RankingSystem.fetchRanking()側でフォールバック済み)。
+ *
+ * 表示順は勝利数(wins)の多い順(RankingSystem.fetchRanking()が
+ * プレイヤー名ごとに対戦ログを集計して返す。同数の場合は参考として
+ * 累計exp降順)。
  * ------------------------------------------------------------
  */
 import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { rankingSystem } from '../systems/RankingSystem.js';
 import { isSupabaseConfigured } from '../config/supabaseConfig.js';
-
-const MODE_LABEL = Object.freeze({ ai: 'AI戦', pvp: 'ローカルPVP', online: 'オンライン' });
 
 export class RankingScene extends Phaser.Scene {
   constructor() {
@@ -29,8 +31,8 @@ export class RankingScene extends Phaser.Scene {
     this.add.text(centerX, 40, 'ランキング', { fontSize: '28px', color: '#ffffff' }).setOrigin(0.5);
 
     const sourceLabel = isSupabaseConfigured()
-      ? 'Supabase上の全対戦結果(exp上位20件)'
-      : 'この端末での対戦履歴のみ(Supabase未設定)';
+      ? 'Supabase上の全対戦結果を集計(勝利数順、上位20名)'
+      : 'この端末での対戦履歴のみ(Supabase未設定・勝利数順)';
     this.add.text(centerX, 75, sourceLabel, { fontSize: '13px', color: '#88ddaa' }).setOrigin(0.5);
 
     this.listText = this.add
@@ -66,13 +68,13 @@ export class RankingScene extends Phaser.Scene {
       this.listText.setText('まだ対戦記録がありません。対戦するとここに記録されます。');
       return;
     }
-    const header = '順位 プレイヤー名           モード       撃破 exp';
+    const header = '順位 プレイヤー名           勝利数 試合数 撃破';
     const lines = rows.map((row, i) => {
       const name = String(row.player_name ?? row.playerName ?? 'プレイヤー').padEnd(14, '　').slice(0, 14);
-      const mode = (MODE_LABEL[row.mode] ?? row.mode ?? '-').padEnd(8, '　');
+      const wins = String(row.wins ?? 0).padStart(4, ' ');
+      const matches = String(row.matches ?? 0).padStart(4, ' ');
       const kills = String(row.kills ?? 0).padStart(3, ' ');
-      const exp = String(row.exp ?? 0).padStart(6, ' ');
-      return `${String(i + 1).padStart(2, ' ')}位 ${name} ${mode} ${kills} ${exp}`;
+      return `${String(i + 1).padStart(2, ' ')}位 ${name} ${wins} ${matches} ${kills}`;
     });
     this.listText.setText([header, ...lines].join('\n'));
   }
