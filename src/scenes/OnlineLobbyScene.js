@@ -27,10 +27,8 @@ import {
   MAX_PLAYERS,
   MAX_ONLINE_PLAYERS,
   AUTO_MATCH_LOBBY_CODE,
-  AUTO_MATCH_MIN_PLAYERS,
   AUTO_MATCH_WAIT_MS,
   AUTO_MATCH_LEADER_CONFIRM_DELAY_MS,
-  AUTO_MATCH_SOLO_AI_COUNT,
 } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { NetworkSystem } from '../systems/NetworkSystem.js';
@@ -55,6 +53,16 @@ export class OnlineLobbyScene extends Phaser.Scene {
     this.role = null; // 'host' | 'guest'
     this.settings = {
       aiCount: 1,
+      difficultyIndex: DIFFICULTY_ORDER.indexOf('normal'),
+      timeLimitIndex: TIME_LIMIT_OPTIONS_SEC.indexOf(180),
+    };
+    // 「マッチング時、最初にマッチングする人(=オートマッチングのリーダーに
+    // なる人)が人数・制限時間・AI難易度を選べるようにしてほしい」という
+    // 要望に対応した設定(_showAutoMatchSettings参照)。participantCountは
+    // 「人間+AIの合計希望人数」で、実際に集まった人間の人数がこれに満たない
+    // 場合は残りをAIで補充する(_becomeAutoMatchLeader参照)。
+    this.autoMatchSettings = {
+      participantCount: 4,
       difficultyIndex: DIFFICULTY_ORDER.indexOf('normal'),
       timeLimitIndex: TIME_LIMIT_OPTIONS_SEC.indexOf(180),
     };
@@ -115,7 +123,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
   _showModeSelect() {
     this._clearBody();
     const centerX = this.scale.width / 2;
-    const autoMatchBtn = this._createButton(centerX, 160, 'オートマッチング(自動で対戦相手を探す)', () => this._startAutoMatch());
+    const autoMatchBtn = this._createButton(centerX, 160, 'オートマッチング(自動で対戦相手を探す)', () => this._showAutoMatchSettings());
     const createBtn = this._createButton(centerX, 225, '部屋を作る(ホスト)', () => this._createRoom());
     const joinBtn = this._createButton(centerX, 290, '部屋に参加する(コード入力)', () => this._promptJoinRoom());
     const backBtn = this._createButton(centerX, 375, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
@@ -127,6 +135,97 @@ export class OnlineLobbyScene extends Phaser.Scene {
   // 参加が一番早い人が実際の対戦部屋を作成して他の参加者を招き入れる方式
   // (詳細はNetworkProtocol.jsのオートマッチング関連関数のコメント、および
   // GameConstants.jsのAUTO_MATCH_*設定のコメントを参照)。
+
+  /**
+   * オートマッチングを開始する前に、希望人数・AI難易度・制限時間を選べる
+   * 設定画面を表示する。「最初にマッチングする人(=待合ロビーに一番早く
+   * 参加する人)が人数選択・制限時間設定・AI難易度設定をできるようにして
+   * ほしい」という要望への対応。実際の待合ロビーの参加順で「リーダー」に
+   * 選ばれた1人の設定だけが実際のマッチ設定として採用される
+   * (_becomeAutoMatchLeader参照。他の参加者がここで選んだ設定は、その人が
+   * リーダーにならなかった場合は使われない)。
+   */
+  _showAutoMatchSettings() {
+    this._clearBody();
+    const centerX = this.scale.width / 2;
+    this.add.text(centerX, 110, 'オートマッチング設定', { fontSize: '18px', color: '#ffffff' }).setOrigin(0.5);
+    const hintLabel = this.add
+      .text(centerX, 138, 'ここで選んだ内容は、あなたが対戦部屋を作る役(先着順)になった場合に使われます', {
+        fontSize: '12px',
+        color: '#aaaaaa',
+        align: 'center',
+      })
+      .setOrigin(0.5);
+
+    const participantRow = this._createStepperRow(
+      centerX,
+      190,
+      '希望人数',
+      () => `${this.autoMatchSettings.participantCount}人(不足分はAIで補充)`,
+      {
+        onDecrease: () => {
+          this.autoMatchSettings.participantCount = Math.max(2, this.autoMatchSettings.participantCount - 1);
+        },
+        onIncrease: () => {
+          this.autoMatchSettings.participantCount = Math.min(MAX_ONLINE_PLAYERS, this.autoMatchSettings.participantCount + 1);
+        },
+      }
+    );
+
+    const difficultyRow = this._createStepperRow(
+      centerX,
+      235,
+      'AI難易度',
+      () => DIFFICULTY_LABEL[DIFFICULTY_ORDER[this.autoMatchSettings.difficultyIndex]],
+      {
+        onDecrease: () => {
+          this.autoMatchSettings.difficultyIndex = Math.max(0, this.autoMatchSettings.difficultyIndex - 1);
+        },
+        onIncrease: () => {
+          this.autoMatchSettings.difficultyIndex = Math.min(DIFFICULTY_ORDER.length - 1, this.autoMatchSettings.difficultyIndex + 1);
+        },
+      }
+    );
+
+    const timeLimitRow = this._createStepperRow(
+      centerX,
+      280,
+      '制限時間',
+      () =>
+        TIME_LIMIT_OPTIONS_SEC[this.autoMatchSettings.timeLimitIndex] === null
+          ? '制限時間なし'
+          : `${TIME_LIMIT_OPTIONS_SEC[this.autoMatchSettings.timeLimitIndex]}秒`,
+      {
+        onDecrease: () => {
+          this.autoMatchSettings.timeLimitIndex = Math.max(0, this.autoMatchSettings.timeLimitIndex - 1);
+        },
+        onIncrease: () => {
+          this.autoMatchSettings.timeLimitIndex = Math.min(TIME_LIMIT_OPTIONS_SEC.length - 1, this.autoMatchSettings.timeLimitIndex + 1);
+        },
+      }
+    );
+
+    const searchBtn = this._createButton(centerX, 340, '検索開始', () => this._startAutoMatch());
+    const backBtn = this._createButton(centerX, 390, '戻る', () => this._showModeSelect());
+
+    this.bodyContainer.add([
+      hintLabel,
+      participantRow.label,
+      participantRow.valueText,
+      participantRow.minusBtn,
+      participantRow.plusBtn,
+      difficultyRow.label,
+      difficultyRow.valueText,
+      difficultyRow.minusBtn,
+      difficultyRow.plusBtn,
+      timeLimitRow.label,
+      timeLimitRow.valueText,
+      timeLimitRow.minusBtn,
+      timeLimitRow.plusBtn,
+      searchBtn,
+      backBtn,
+    ]);
+  }
 
   async _startAutoMatch() {
     this._clearBody();
@@ -165,29 +264,36 @@ export class OnlineLobbyScene extends Phaser.Scene {
     if (!this._autoMatchStatusText || !this._autoMatchNetwork) return;
     const count = presenceStateToParticipants(this._autoMatchNetwork.getPresenceState()).length || 1;
     this._autoMatchStatusText.setText(
-      `オートマッチング中...(現在${count}人待機中/最大${MAX_ONLINE_PLAYERS}人)\n他のプレイヤーが参加するのを待っています`
+      `オートマッチング中...(現在${count}人待機中/希望${this.autoMatchSettings.participantCount}人)\n他のプレイヤーが参加するのを待っています`
     );
   }
 
   /**
-   * マッチ成立条件(定員に達した、または待機時間切れ)を満たしていれば、
+   * マッチ成立条件(希望人数に達した、または待機時間切れ)を満たしていれば、
    * 自分がリーダー(グループの先頭=参加が一番早い人)かどうかを確認し、
    * リーダーであれば実際の対戦部屋を作成する。
+   *
+   * 「希望人数」は_showAutoMatchSettingsで自分が選んだ値(this.
+   * autoMatchSettings.participantCount)を使う。自分がリーダーになった
+   * 場合だけこの値が実際に使われる(自分がリーダーでなければ
+   * isAutoMatchLeaderでfalseになりそのまま何もしない)ため、他の参加者の
+   * 希望人数設定と食い違っていても問題ない。
    * @param {boolean} timeoutReached - 待機時間切れによる呼び出しか
    */
   _checkAutoMatchLeader(timeoutReached) {
     if (this._autoMatchResolved || !this._autoMatchNetwork) return;
     const participants = presenceStateToParticipants(this._autoMatchNetwork.getPresenceState());
     if (participants.length === 0) return;
-    const group = pickAutoMatchGroup(participants, MAX_ONLINE_PLAYERS);
-    const isFull = group.length >= MAX_ONLINE_PLAYERS;
+    const desiredCount = this.autoMatchSettings.participantCount;
+    const group = pickAutoMatchGroup(participants, desiredCount);
+    const isFull = group.length >= desiredCount;
     const elapsed = Date.now() - (this._autoMatchJoinedAt ?? Date.now());
     const waitedEnough = timeoutReached || elapsed >= AUTO_MATCH_WAIT_MS;
-    // 定員に達していれば即座に、そうでなければ待機時間が切れるまでは何もしない
-    // (待機時間切れの時点で自分一人だった場合は_becomeAutoMatchLeader()側で
-    // AI(AUTO_MATCH_SOLO_AI_COUNT人)を補充して対戦を成立させる)。
+    // 希望人数に達していれば即座に、そうでなければ待機時間が切れるまでは
+    // 何もしない(待機時間切れの時点で人数が足りない場合は
+    // _becomeAutoMatchLeader()側でAIを補充して対戦を成立させる)。
     if (!isFull && !waitedEnough) return;
-    if (!isAutoMatchLeader(participants, this._autoMatchNetwork.clientId, MAX_ONLINE_PLAYERS)) return;
+    if (!isAutoMatchLeader(participants, this._autoMatchNetwork.clientId, desiredCount)) return;
     this._becomeAutoMatchLeader(group);
   }
 
@@ -200,13 +306,15 @@ export class OnlineLobbyScene extends Phaser.Scene {
     await new Promise((resolve) => this.time.delayedCall(AUTO_MATCH_LEADER_CONFIRM_DELAY_MS, resolve));
     if (!this._sceneActive || this._handedOffToGame) return;
 
+    // 「最初にマッチングする人(=リーダーになった自分)が人数選択・制限時間・
+    // AI難易度を選べるようにしてほしい」への対応: 自分がこの画面で選んだ
+    // 希望人数に対して、実際に集まった人間の人数が足りない分だけAIで補充する。
     const humanCount = Math.max(1, group.length);
-    const aiCount =
-      humanCount < AUTO_MATCH_MIN_PLAYERS
-        ? Math.max(0, Math.min(MAX_PLAYERS - humanCount, AUTO_MATCH_SOLO_AI_COUNT))
-        : Math.max(0, Math.min(MAX_PLAYERS - humanCount, 1));
-    const aiDifficulty = 'normal';
-    const timeLimitMs = 180 * 1000;
+    const desiredTotal = Math.max(humanCount, Math.min(MAX_PLAYERS, this.autoMatchSettings.participantCount));
+    const aiCount = Math.max(0, desiredTotal - humanCount);
+    const aiDifficulty = DIFFICULTY_ORDER[this.autoMatchSettings.difficultyIndex];
+    const timeLimitSec = TIME_LIMIT_OPTIONS_SEC[this.autoMatchSettings.timeLimitIndex];
+    const timeLimitMs = timeLimitSec === null ? Infinity : timeLimitSec * 1000;
 
     let gameNetwork;
     let roomCode;

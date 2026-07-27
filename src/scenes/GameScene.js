@@ -853,8 +853,12 @@ export class GameScene extends Phaser.Scene {
   /** 試合開始前の「3・2・1・START」カウントダウン演出。終了までプレイヤー/AIの行動を止める */
   _startCountdown() {
     this.countdownActive = true;
-    const centerX = SCREEN_WIDTH / 2;
-    const centerY = (SCREEN_HEIGHT - 64) / 2;
+    // 画面レイアウトのブラウザ追従(2026-07更新)により、中央位置は固定値
+    // (旧SCREEN_WIDTH/SCREEN_HEIGHT)ではなく、右側パネル分を除いた
+    // 3Dステージ表示領域(this._layout)の中央を使う(_onGameResizeが
+    // リサイズ時にこのcountdownTextを追従させる際も同じ基準を使っている)。
+    const centerX = this._layout.stageWidth / 2;
+    const centerY = this._layout.totalHeight / 2;
 
     this.countdownText = this.add
       .text(centerX, centerY, '', { fontSize: '64px', color: '#ffffff', fontStyle: 'bold' })

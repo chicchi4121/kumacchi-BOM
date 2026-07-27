@@ -244,7 +244,10 @@ export const CUBE_ROLL_DURATION_MS = 550;
 // 構成のため。ごく稀に複数クライアントがほぼ同時にマッチを成立させる
 // 競合が発生し得る点はREADME.mdに既知の制限として明記している)。
 export const AUTO_MATCH_LOBBY_CODE = 'AUTOMATCH-LOBBY-V1'; // 5文字のランダム部屋コードとは衝突しない固定チャンネル名
-export const AUTO_MATCH_MIN_PLAYERS = 2; // これ未満(=自分一人)の場合は制限時間まで他の参加者を待つ
 export const AUTO_MATCH_WAIT_MS = 8000; // 自分が待合ロビーに参加してから、他の参加者を待つ最大時間
 export const AUTO_MATCH_LEADER_CONFIRM_DELAY_MS = 400; // マッチ確定前の再確認待ち時間(複数クライアントの同時確定を減らす)
-export const AUTO_MATCH_SOLO_AI_COUNT = 3; // 制限時間まで待っても自分一人だった場合に補充するAI人数
+// 「希望人数」(足りない分をAIで補充する基準の合計人数)は、2026-07更新で
+// 固定値ではなくオートマッチングのリーダーが_showAutoMatchSettingsで選べる
+// ようにしたため、旧AUTO_MATCH_MIN_PLAYERS/AUTO_MATCH_SOLO_AI_COUNTは廃止した
+// (OnlineLobbyScene._becomeAutoMatchLeaderのthis.autoMatchSettings.
+// participantCountを参照)。
