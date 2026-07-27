@@ -136,22 +136,30 @@ export class GameScene extends Phaser.Scene {
     this.items = [];
 
     this._createPlayers(totalParticipants);
-    this._createHud();
-    this._buildPlayerCards();
-    this._createInput();
 
+    // battleSystemは_buildPlayerCards()(内部で_updateHud()を呼び、各
+    // プレイヤーカードの残り時間表示のためにthis.battleSystem.timeLimitMs
+    // を参照する)より前に用意しておく必要がある。以前はこの順序が逆で、
+    // battleSystem未生成のままthis.battleSystem.timeLimitMsを読もうとして
+    // 対戦開始のたびに必ず例外が発生し、画面が固まる(フリーズする)不具合に
+    // なっていた。
     this.aiSystem = new AISystem();
     this.aiSystem.setup(
       this.players.filter((p) => p.isAI),
       this.config.aiDifficulty
     );
-
     this.battleSystem = new BattleSystem(this.players, { timeLimitMs: this.config.timeLimitMs });
+
+    this._createHud();
+    this._buildPlayerCards();
+    this._createInput();
 
     this.events.once('shutdown', () => {
       this._sceneActive = false;
       this.cubeRenderer?.dispose();
       this._offHostNetworkMessage?.();
+      if (this._onHudResizeHandler) this.scale.off('resize', this._onHudResizeHandler);
+      if (this._onCubeResizeHandler) this.scale.off('resize', this._onCubeResizeHandler);
     });
 
     if (this.config.mode === 'online') {
@@ -284,6 +292,8 @@ export class GameScene extends Phaser.Scene {
       this.cubeRenderer?.dispose();
       this._offGuestNetworkMessage?.();
       this._guestInitRetryTimer?.remove();
+      if (this._onHudResizeHandler) this.scale.off('resize', this._onHudResizeHandler);
+      if (this._onCubeResizeHandler) this.scale.off('resize', this._onCubeResizeHandler);
     });
   }
 
@@ -354,12 +364,16 @@ export class GameScene extends Phaser.Scene {
     );
     this.humanPlayer = this.players.find((p) => p.playerId === this.myPlayerId) ?? this.players[0] ?? null;
     this.humanPlayers = this.humanPlayer ? [this.humanPlayer] : [];
-    this._buildPlayerCards();
 
     // BattleSystem本体は持たず、HUD/勝敗表示に必要な最小限のフィールドだけを
     // 持つミラーを用意する(実際の勝敗判定はホストが行い、stateメッセージで
     // 結果を受け取るだけ)。getLiveRankはv1では簡略化しnullを返す(最終結果は
     // 試合終了時のresultイベントで正しく表示される)。
+    // 【重要】_buildPlayerCards()より前に用意すること。_buildPlayerCards()は
+    // 内部で_updateHud()を呼び、各プレイヤーカードの残り時間表示のために
+    // this.battleSystem.timeLimitMsを参照するため、順序が逆だと対戦開始の
+    // たびに必ず例外が発生し画面が固まる(フリーズする)不具合になる
+    // (host/ローカル側のcreate()でも同じ理由で順序を修正済み)。
     this.battleSystem = {
       elapsedMs: 0,
       timeLimitMs: this.config.timeLimitMs,
@@ -367,6 +381,7 @@ export class GameScene extends Phaser.Scene {
       winner: null,
       getLiveRank: () => null,
     };
+    this._buildPlayerCards();
 
     this._cubeRendererReadyPromise = this._initCubeRenderer();
     this._startCountdown();
@@ -498,7 +513,12 @@ export class GameScene extends Phaser.Scene {
     this.cubeRenderer = new CubeRenderer(canvas);
     try {
       await this.cubeRenderer.init(this.stage);
-      this.scale.on('resize', () => this.cubeRenderer?.resize());
+      // シーン終了時に確実に解除できるよう、ハンドラをフィールドに保持しておく
+      // (以前はscale.offで解除しておらず、対戦を何度もリプレイするとリスナーが
+      // 蓄積する軽微なリークがあった。_sceneActiveガードで実害は無かったが、
+      // 素直にoffで解除する)。
+      this._onCubeResizeHandler = () => this.cubeRenderer?.resize();
+      this.scale.on('resize', this._onCubeResizeHandler);
       // 起動直後の初期表示なので、アニメーションさせず即座にその面を正面に向ける
       // (rotateToFace()だと「何もしていないのに立方体が回る」ように見えてしまう)。
       if (this.humanPlayer) this.cubeRenderer.snapToFace(this.humanPlayer.face);
@@ -696,7 +716,9 @@ export class GameScene extends Phaser.Scene {
 
     // ウィンドウサイズが変わるたびにステージ幅・パネル幅を再計算し、
     // パネル・カウントダウン・VRM読込状況テキストの位置を追従させる。
-    this.scale.on('resize', (gameSize) => this._onGameResize(gameSize));
+    // (シーン終了時にscale.offで確実に解除できるよう、ハンドラをフィールドに保持)
+    this._onHudResizeHandler = (gameSize) => this._onGameResize(gameSize);
+    this.scale.on('resize', this._onHudResizeHandler);
   }
 
   /** ウィンドウのリサイズに追従して、対戦画面右側パネル・中央寄せ要素の位置を再計算する */
@@ -1313,8 +1335,14 @@ export class GameScene extends Phaser.Scene {
     return true;
   }
 
-  /** 残り時間の表示用文字列。「制限時間なし」(timeLimitMs=Infinity)なら∞と表示する */
+  /**
+   * 残り時間の表示用文字列。「制限時間なし」(timeLimitMs=Infinity)なら∞と表示する。
+   * this.battleSystemがまだ用意されていない(生成順序の事故など)場合に備え、
+   * 例外を投げず'-'を返すだけにしてある(このメソッドはHUD更新のたびに
+   * 呼ばれるため、ここで例外が出ると対戦開始そのものが固まってしまう)。
+   */
   _formatRemainingTime() {
+    if (!this.battleSystem) return '-';
     if (!Number.isFinite(this.battleSystem.timeLimitMs)) return '∞';
     const remainingMs = Math.max(0, this.battleSystem.timeLimitMs - this.battleSystem.elapsedMs);
     return `${Math.ceil(remainingMs / 1000)}s`;
