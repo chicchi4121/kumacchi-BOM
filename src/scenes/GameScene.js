@@ -940,6 +940,28 @@ export class GameScene extends Phaser.Scene {
     const owner = this.players.find((p) => p.playerId === bomb.ownerId);
     if (owner) owner.stats.bombsExploded++;
 
+    // 「アイテムは爆弾で壊れるようにしてほしい」への対応:
+    // 爆風が届いたマスに既に置かれていたアイテムを破壊する。ここで判定に
+    // 使うのは「この爆発で壊れたブロックからアイテムが出現する前」の
+    // this.itemsのスナップショットにする必要がある。そうしないと、直後の
+    // 破壊ブロック処理で新しく出現したアイテム(壊れたブロックの中身)を
+    // その場で即座に壊してしまう(=アイテム入りブロックを壊しても何も
+    // 手に入らなくなる)事故が起きるため、必ずブロック破壊ループより前に
+    // このスナップショット判定を行う(以前はループの後で行っており、同一
+    // 爆発で出現した直後のアイテムまで巻き込んで即座に破壊してしまう
+    // 回帰不具合になっていた)。
+    const itemsDestroyedByBlast = this.items.filter(
+      (it) => it.face === bomb.face && tiles.some((t) => t.col === it.col && t.row === it.row)
+    );
+    if (itemsDestroyedByBlast.length > 0) {
+      const destroyedSet = new Set(itemsDestroyedByBlast);
+      for (const item of itemsDestroyedByBlast) {
+        this.cubeRenderer?.removeItem(item);
+        item.destroy();
+      }
+      this.items = this.items.filter((it) => !destroyedSet.has(it));
+    }
+
     // 破壊されたブロックの見た目を更新し、アイテム入りブロックだった場合はアイテムを出現させる
     // (オンライン対戦のホストの場合、ゲストへ送るexplosionイベントに含める
     // ため、実際に破壊が確定したマスをmirrorBrokenForBroadcastへ集める)
@@ -976,25 +998,6 @@ export class GameScene extends Phaser.Scene {
       this.config.online.network.send(
         buildExplosionEvent(bomb, tiles, broken, mirrorBrokenForBroadcast, isChainReaction)
       );
-    }
-
-    // 「アイテムは爆弾で壊れるようにしてほしい」への対応:
-    // 爆風が届いたマスに既に置かれていたアイテムを破壊する。ここで判定に
-    // 使うのは「この爆発で壊れたブロックからアイテムが出現する前」の
-    // this.itemsのスナップショットにする必要がある。そうしないと、直後の
-    // 破壊ブロック処理で新しく出現したアイテム(壊れたブロックの中身)を
-    // その場で即座に壊してしまう(=アイテム入りブロックを壊しても何も
-    // 手に入らなくなる)事故が起きるため。
-    const itemsDestroyedByBlast = this.items.filter(
-      (it) => it.face === bomb.face && tiles.some((t) => t.col === it.col && t.row === it.row)
-    );
-    if (itemsDestroyedByBlast.length > 0) {
-      const destroyedSet = new Set(itemsDestroyedByBlast);
-      for (const item of itemsDestroyedByBlast) {
-        this.cubeRenderer?.removeItem(item);
-        item.destroy();
-      }
-      this.items = this.items.filter((it) => !destroyedSet.has(it));
     }
 
     // 爆風が届いたマス(同じ面のみ)にいるプレイヤーへダメージ
