@@ -35,6 +35,10 @@ import {
   PLAYER_COLOR_FILTERS,
   HUMAN_KEY_MAPS,
   MAX_HUMAN_PLAYERS,
+  MAX_ONLINE_PLAYERS,
+  NETWORK_STATE_BROADCAST_INTERVAL_MS,
+  NETWORK_INPUT_SEND_INTERVAL_MS,
+  NETWORK_INIT_REQUEST_RETRY_MS,
 } from '../constants/GameConstants.js';
 import { CubeStage } from '../objects/CubeStage.js';
 import { Player } from '../objects/Player.js';
@@ -47,6 +51,19 @@ import { BattleSystem } from '../systems/BattleSystem.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { vrmSystem } from '../systems/VRMSystem.js';
 import { CubeRenderer } from '../systems/CubeRenderer.js';
+import {
+  createMirrorStage,
+  buildMatchInitMessage,
+  buildStateMessage,
+  buildExplosionEvent,
+  buildItemPickupEvent,
+  buildResultEvent,
+  buildMoveInputMessage,
+  buildBombInputMessage,
+  pickDirectionFromKeys,
+  applyPlayerState,
+  diffById,
+} from '../systems/NetworkProtocol.js';
 
 const DEFAULT_VRM_PATH = 'assets/vrm/kumacchi.vrm';
 
@@ -56,22 +73,32 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * @param {object} data - { mode: 'pvp'|'ai', playerCount, aiCount, humanCount, timeLimitMs, aiDifficulty }
+   * @param {object} data - { mode: 'pvp'|'ai'|'online', playerCount, aiCount, humanCount, timeLimitMs, aiDifficulty, online }
    *   timeLimitMsにInfinityを渡すと「制限時間なし」になる(BattleSystemの
    *   時間切れ判定が自然に発生しなくなる)。
-   *   humanCountは同一キーボードで同時に操作する人間プレイヤーの人数
-   *   (PVP対応。1なら従来通りソロ+AI)。playerCountはhumanCount以上である
-   *   必要がある(LobbyScene側で保証する)。
+   *   humanCountは同時に操作する人間プレイヤーの人数(ローカルPVP/オンライン
+   *   対戦対応。1なら従来通りソロ+AI)。playerCountはhumanCount以上である
+   *   必要がある(LobbyScene/OnlineLobbyScene側で保証する)。
+   *
+   *   mode:'online'の場合、data.onlineに以下を渡す(OnlineLobbyScene参照):
+   *   { network: NetworkSystem, role: 'host'|'guest', roomCode,
+   *     clientToPlayerId: {clientId: playerId} (hostのみ、送信用) }
+   *   オンライン対戦はホスト権威型: ホストの端末だけがゲームロジック全体
+   *   (マップ生成・AI・爆弾・勝敗判定)を実行し、ゲストはホストから届く
+   *   状態を描画するだけになる(NetworkProtocol.js参照)。
    */
   init(data) {
     const playerCount = data?.playerCount ?? 1;
+    const isOnline = data?.mode === 'online';
+    const maxHuman = isOnline ? MAX_ONLINE_PLAYERS : MAX_HUMAN_PLAYERS;
     this.config = {
       mode: data?.mode ?? 'ai',
       playerCount,
       aiCount: data?.aiCount ?? 2,
-      humanCount: Math.max(1, Math.min(MAX_HUMAN_PLAYERS, data?.humanCount ?? 1, playerCount)),
+      humanCount: Math.max(1, Math.min(maxHuman, data?.humanCount ?? 1, playerCount)),
       timeLimitMs: data?.timeLimitMs ?? 180000,
       aiDifficulty: data?.aiDifficulty ?? 'normal',
+      online: data?.online ?? null,
     };
   }
 
@@ -80,6 +107,16 @@ export class GameScene extends Phaser.Scene {
     // CubeRenderer(Three.js)が描画するため、Bomb/Item側で独自にPhaser用の
     // スプライトを作らせないようにするフラグ。
     this.render3D = true;
+    this._sceneActive = true;
+    this.resultTriggered = false;
+
+    // オンライン対戦のゲスト(参加した側)は、ホストから届くマップ・状態を
+    // 受信して描画するだけの別フロー(_createGuestScene)になる。
+    // ホスト・ローカル対戦(AI戦/同一キーボードPVP)は従来通り本フローを使う。
+    if (this.config.mode === 'online' && this.config.online?.role === 'guest') {
+      this._createGuestScene();
+      return;
+    }
 
     this.stage = new CubeStage();
     const totalParticipants = Math.min(6, this.config.playerCount + this.config.aiCount);
@@ -99,13 +136,16 @@ export class GameScene extends Phaser.Scene {
     );
 
     this.battleSystem = new BattleSystem(this.players, { timeLimitMs: this.config.timeLimitMs });
-    this.resultTriggered = false;
 
-    this._sceneActive = true;
     this.events.once('shutdown', () => {
       this._sceneActive = false;
       this.cubeRenderer?.dispose();
+      this._offHostNetworkMessage?.();
     });
+
+    if (this.config.mode === 'online') {
+      this._setupOnlineHost();
+    }
 
     // 3D描画(Three.js)の初期化は非同期(CDN読込あり)。ゲームロジック側
     // (移動・爆弾・カウントダウン等)はこれを待たずに進行できるようにする。
@@ -113,6 +153,307 @@ export class GameScene extends Phaser.Scene {
 
     this._startCountdown();
     this._loadAllVrmAppearances();
+  }
+
+  // ==========================================================================
+  // オンライン対戦(Supabase Realtime): ホスト側
+  // ==========================================================================
+
+  /**
+   * ホストとして、マップ生成が終わった直後にmatch_init(マップ・出走
+   * プレイヤー一覧)を全員へ送信し、以後の入力(input)メッセージを
+   * 受け取れるようにする。
+   */
+  _setupOnlineHost() {
+    const network = this.config.online.network;
+    this._networkSeq = 0;
+    this._networkMoveStates = new Map(); // playerId -> {up,down,left,right} (ネットワーク越しの人間プレイヤーの現在の入力状態)
+    this._offHostNetworkMessage = network.onMessage((msg) => this._onHostNetworkMessage(msg));
+    this._sendMatchInit();
+  }
+
+  _sendMatchInit() {
+    const network = this.config.online?.network;
+    if (!network) return;
+    const matchConfig = {
+      aiDifficulty: this.config.aiDifficulty,
+      timeLimitMs: this.config.timeLimitMs,
+      humanCount: this.config.humanCount,
+      aiCount: this.config.aiCount,
+      clientToPlayerId: this.config.online.clientToPlayerId ?? {},
+    };
+    network.send(buildMatchInitMessage(this.stage, this.players, matchConfig));
+  }
+
+  /** ゲストからのメッセージ(再送要求・入力)を処理する(ホストのみ) */
+  _onHostNetworkMessage(msg) {
+    if (!msg) return;
+    if (msg.type === 'request_init') {
+      this._sendMatchInit();
+      return;
+    }
+    if (msg.type !== 'input') return;
+
+    const clientToPlayerId = this.config.online.clientToPlayerId ?? {};
+    const playerId = clientToPlayerId[msg.senderClientId];
+    if (!playerId) return; // 未参加・不明なクライアントからの入力は無視する
+
+    if (msg.mode === 'move') {
+      this._networkMoveStates.set(playerId, { up: msg.up, down: msg.down, left: msg.left, right: msg.right });
+    } else if (msg.mode === 'bomb') {
+      const player = this.players.find((p) => p.playerId === playerId);
+      if (player) this._tryPlaceBomb(player);
+    }
+  }
+
+  /** 状態(state)ブロードキャストを一定間隔(NETWORK_STATE_BROADCAST_INTERVAL_MS)で送る(ホストのみ) */
+  _broadcastStateIfDue(time) {
+    const network = this.config.online?.network;
+    if (!network) return;
+    if (time - (this._lastStateBroadcastAt ?? 0) < NETWORK_STATE_BROADCAST_INTERVAL_MS) return;
+    this._lastStateBroadcastAt = time;
+    this._networkSeq += 1;
+    network.send(
+      buildStateMessage(
+        this._networkSeq,
+        this.battleSystem.elapsedMs,
+        this.players,
+        this.bombs,
+        this.items,
+        this.battleSystem.isOver,
+        this.battleSystem.winner?.playerId ?? null
+      )
+    );
+  }
+
+  // ==========================================================================
+  // オンライン対戦(Supabase Realtime): ゲスト側
+  // ==========================================================================
+
+  /**
+   * ゲスト(部屋に参加した側)のシーン初期化。ホストからmatch_initが届く
+   * までは「受信中...」を表示するだけで、マップ生成やAI・爆弾等のロジックは
+   * 一切実行しない(ホスト権威型: ゲストは描画専用)。
+   */
+  _createGuestScene() {
+    this.bombs = [];
+    this.items = [];
+    this.players = [];
+    this._bombMirrorsById = new Map();
+    this._itemMirrorsById = new Map();
+    this._matchInitReceived = false;
+    this.myPlayerId = null;
+
+    this._createHud();
+    this._createGuestInput();
+
+    this._guestStatusText = this.add
+      .text(SCREEN_WIDTH / 2, (SCREEN_HEIGHT - 64) / 2, 'ホストの対戦情報を受信中...', {
+        fontSize: '18px',
+        color: '#ffffff',
+        backgroundColor: '#000000aa',
+        padding: { x: 12, y: 8 },
+      })
+      .setOrigin(0.5)
+      .setDepth(DEPTH.UI);
+
+    const network = this.config.online.network;
+    this._offGuestNetworkMessage = network.onMessage((msg) => this._onGuestNetworkMessage(msg));
+    network.send({ type: 'request_init' });
+    this._guestInitRetryTimer = this.time.addEvent({
+      delay: NETWORK_INIT_REQUEST_RETRY_MS,
+      loop: true,
+      callback: () => {
+        if (!this._matchInitReceived) network.send({ type: 'request_init' });
+      },
+    });
+
+    this.events.once('shutdown', () => {
+      this._sceneActive = false;
+      this.cubeRenderer?.dispose();
+      this._offGuestNetworkMessage?.();
+      this._guestInitRetryTimer?.remove();
+    });
+  }
+
+  /** ゲスト用の入力: 自分の端末の矢印キー+Spaceで操作し、結果はホストへ送信するのみ(ローカルでは移動しない) */
+  _createGuestInput() {
+    const KeyCodes = Phaser.Input.Keyboard.KeyCodes;
+    this.escKey = this.input.keyboard.addKey(KeyCodes.ESC);
+    this.escKey.on('down', () => {
+      if (this.countdownActive) return;
+      this._pauseGame();
+    });
+
+    const map = HUMAN_KEY_MAPS[0];
+    this._guestKeys = {
+      up: this.input.keyboard.addKey(KeyCodes[map.up]),
+      down: this.input.keyboard.addKey(KeyCodes[map.down]),
+      left: this.input.keyboard.addKey(KeyCodes[map.left]),
+      right: this.input.keyboard.addKey(KeyCodes[map.right]),
+      bomb: this.input.keyboard.addKey(KeyCodes[map.bomb]),
+    };
+    this._guestKeys.bomb.on('down', () => {
+      if (this.countdownActive || !this.myPlayerId) return;
+      this.config.online.network.send(buildBombInputMessage(this.myPlayerId));
+    });
+  }
+
+  _sendGuestMoveInputIfDue(time) {
+    if (!this.myPlayerId) return;
+    if (time - (this._lastMoveSendAt ?? 0) < NETWORK_INPUT_SEND_INTERVAL_MS) return;
+    this._lastMoveSendAt = time;
+    const keys = this._guestKeys;
+    this.config.online.network.send(
+      buildMoveInputMessage(this.myPlayerId, {
+        up: keys.up.isDown,
+        down: keys.down.isDown,
+        left: keys.left.isDown,
+        right: keys.right.isDown,
+      })
+    );
+  }
+
+  _onGuestNetworkMessage(msg) {
+    if (!msg) return;
+    if (msg.type === 'match_init') this._applyMatchInit(msg);
+    else if (msg.type === 'state') this._applyStateMessage(msg);
+    else if (msg.type === 'event') this._applyNetworkEvent(msg);
+  }
+
+  /** ホストから届いたマップ・出走プレイヤー一覧から、ゲスト側の描画用シーンを組み立てる(初回のみ) */
+  _applyMatchInit(msg) {
+    if (this._matchInitReceived) return; // 再送されても2重に組み立てない
+    this._matchInitReceived = true;
+    this._guestInitRetryTimer?.remove();
+    this._guestStatusText?.destroy();
+
+    this.stage = createMirrorStage(msg.stage);
+    this.config.aiDifficulty = msg.config?.aiDifficulty ?? this.config.aiDifficulty;
+    this.config.timeLimitMs = msg.config?.timeLimitMs ?? this.config.timeLimitMs;
+    this.myPlayerId = msg.config?.clientToPlayerId?.[this.config.online.network.clientId] ?? null;
+
+    this.players = (msg.roster ?? []).map(
+      (r) =>
+        new Player(this, this.stage, r.face, r.col, r.row, {
+          colorIndex: r.colorIndex,
+          isAI: r.isAI,
+          playerId: r.playerId,
+        })
+    );
+    this.humanPlayer = this.players.find((p) => p.playerId === this.myPlayerId) ?? this.players[0] ?? null;
+    this.humanPlayers = this.humanPlayer ? [this.humanPlayer] : [];
+
+    // BattleSystem本体は持たず、HUD/勝敗表示に必要な最小限のフィールドだけを
+    // 持つミラーを用意する(実際の勝敗判定はホストが行い、stateメッセージで
+    // 結果を受け取るだけ)。getLiveRankはv1では簡略化しnullを返す(最終結果は
+    // 試合終了時のresultイベントで正しく表示される)。
+    this.battleSystem = {
+      elapsedMs: 0,
+      timeLimitMs: this.config.timeLimitMs,
+      isOver: false,
+      winner: null,
+      getLiveRank: () => null,
+    };
+
+    this._cubeRendererReadyPromise = this._initCubeRenderer();
+    this._startCountdown();
+    this._loadAllVrmAppearances();
+  }
+
+  _applyStateMessage(msg) {
+    if (!this._matchInitReceived) return;
+    if (msg.seq != null && this._lastStateSeq != null && msg.seq <= this._lastStateSeq) return; // 順序が入れ替わった古いパケットは無視
+    this._lastStateSeq = msg.seq;
+
+    const now = this.time.now;
+    for (const state of msg.players ?? []) {
+      const player = this.players.find((p) => p.playerId === state.id);
+      if (player) applyPlayerState(player, state, now);
+    }
+
+    const prevBombs = Array.from(this._bombMirrorsById.values());
+    const { added: addedBombs, removed: removedBombs } = diffById(prevBombs, msg.bombs ?? []);
+    for (const b of removedBombs) {
+      this.cubeRenderer?.removeBomb(this._bombMirrorsById.get(b.id));
+      this._bombMirrorsById.delete(b.id);
+    }
+    for (const b of addedBombs) {
+      const mirror = { id: b.id, face: b.face, col: b.col, row: b.row, detonated: false };
+      this._bombMirrorsById.set(b.id, mirror);
+      this.cubeRenderer?.addBomb(mirror);
+    }
+    this.bombs = Array.from(this._bombMirrorsById.values());
+
+    const prevItems = Array.from(this._itemMirrorsById.values());
+    const { added: addedItems, removed: removedItems } = diffById(prevItems, msg.items ?? []);
+    for (const it of removedItems) {
+      this.cubeRenderer?.removeItem(this._itemMirrorsById.get(it.id));
+      this._itemMirrorsById.delete(it.id);
+    }
+    for (const it of addedItems) {
+      const mirror = { id: it.id, face: it.face, col: it.col, row: it.row, type: it.type };
+      this._itemMirrorsById.set(it.id, mirror);
+      this.cubeRenderer?.addItem(mirror);
+    }
+    this.items = Array.from(this._itemMirrorsById.values());
+
+    this.battleSystem.elapsedMs = msg.elapsedMs ?? this.battleSystem.elapsedMs;
+    this.battleSystem.isOver = !!msg.isOver;
+    if (msg.isOver && msg.winnerId != null && !this.battleSystem.winner) {
+      this.battleSystem.winner = this.players.find((p) => p.playerId === msg.winnerId) ?? null;
+    }
+  }
+
+  /** ホストからの単発イベント(explosion/item_pickup/result)を反映する */
+  _applyNetworkEvent(msg) {
+    if (msg.kind === 'explosion') {
+      this.cubeRenderer?.showExplosion(msg.face, msg.tiles ?? [], this.time.now);
+      soundSystem.playSE(msg.isChainReaction ? 'chain_explosion' : 'explosion');
+      for (const b of msg.broken ?? []) this.cubeRenderer?.removeBlockAt(msg.face, b.col, b.row);
+      for (const m of msg.mirrorBroken ?? []) this.cubeRenderer?.removeBlockAt(m.face, m.col, m.row);
+    } else if (msg.kind === 'item_pickup') {
+      soundSystem.playSE('item_get');
+    } else if (msg.kind === 'result') {
+      this._handleGuestResult(msg);
+    }
+  }
+
+  _handleGuestResult(msg) {
+    if (this.resultTriggered) return;
+    this.resultTriggered = true;
+    this.battleSystem.isOver = true;
+    this.battleSystem.winner = this.players.find((p) => p.playerId === msg.winnerId) ?? null;
+    const humanWon = this.humanPlayer && this.humanPlayer.playerId === msg.winnerId;
+    soundSystem.playSE(humanWon ? 'victory' : 'defeat');
+    soundSystem.stopBGM();
+
+    this.time.delayedCall(1500, () => {
+      const myIds = this.humanPlayer ? [this.humanPlayer.playerId] : [];
+      this.scene.start(SCENE_KEYS.RESULT, {
+        winner: this.battleSystem.winner,
+        mode: this.config.mode,
+        humanPlayerIds: myIds,
+        // ゲストは自分の1人分だけをランキング送信対象にする(ホストも
+        // 別途自分の1人分だけ送るため、これで参加者全員が重複なく1回ずつ
+        // 送信される。update()内のrankingPlayerIdsのコメントも参照)。
+        rankingPlayerIds: myIds,
+        players: msg.players ?? [],
+        finalRanks: msg.finalRanks ?? {},
+      });
+    });
+  }
+
+  /** ゲスト側のメインループ: 自分の入力を送りつつ、受信済みの状態を描画するだけ(ロジックは一切実行しない) */
+  _updateGuest(time) {
+    if (!this._matchInitReceived) return;
+    this._sendGuestMoveInputIfDue(time);
+    this._updateHud();
+    if (this.cubeRenderer?.ready) {
+      this.cubeRenderer.syncPlayers(this.players, time);
+      if (this.humanPlayer) this.cubeRenderer.followFace(this.humanPlayer.face);
+      this.cubeRenderer.render(time);
+    }
   }
 
   /**
@@ -300,10 +641,15 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * 人間プレイヤー1人につき1つ、HUMAN_KEY_MAPS(GameConstants.js)の
-   * キー配列を順番に割り当てる(PVP対応: 同一キーボードでのホットシート
-   * 対戦。プレイヤー1=矢印キー+Space、プレイヤー2=WASD+F、
+   * キー配列を順番に割り当てる(ローカルPVP対応: 同一キーボードでの
+   * ホットシート対戦。プレイヤー1=矢印キー+Space、プレイヤー2=WASD+F、
    * プレイヤー3=IJKL+U、プレイヤー4=テンキー)。
    * ポーズ(ESC)は全員共通の1つのキーのままにする(誰が押しても一時停止)。
+   *
+   * オンライン対戦のホストは、ローカルキーで操作するのは自分の1人分
+   * (humanPlayers[0])だけにする。2人目以降(ネットワーク越しの参加者)は
+   * ホストの物理キーボードとは無関係なので、_networkMoveStates(相手から
+   * 届いた入力状態)を_handleMovementInputで併せて処理する。
    */
   _createInput() {
     const KeyCodes = Phaser.Input.Keyboard.KeyCodes;
@@ -313,7 +659,10 @@ export class GameScene extends Phaser.Scene {
       this._pauseGame();
     });
 
-    this._humanInputs = this.humanPlayers.map((player, index) => {
+    const isOnlineHost = this.config.mode === 'online';
+    const localHumanPlayers = isOnlineHost ? this.humanPlayers.slice(0, 1) : this.humanPlayers;
+
+    this._humanInputs = localHumanPlayers.map((player, index) => {
       const map = HUMAN_KEY_MAPS[index] ?? HUMAN_KEY_MAPS[HUMAN_KEY_MAPS.length - 1];
       const keys = {
         up: this.input.keyboard.addKey(KeyCodes[map.up]),
@@ -395,6 +744,9 @@ export class GameScene extends Phaser.Scene {
     if (owner) owner.stats.bombsExploded++;
 
     // 破壊されたブロックの見た目を更新し、アイテム入りブロックだった場合はアイテムを出現させる
+    // (オンライン対戦のホストの場合、ゲストへ送るexplosionイベントに含める
+    // ため、実際に破壊が確定したマスをmirrorBrokenForBroadcastへ集める)
+    const mirrorBrokenForBroadcast = [];
     for (const b of broken) {
       this.cubeRenderer?.removeBlockAt(bomb.face, b.col, b.row);
       if (b.spawnItem && b.itemType) {
@@ -410,6 +762,7 @@ export class GameScene extends Phaser.Scene {
         const mirrorResult = this.stage.breakBlock(mirror.face, mirror.col, mirror.row);
         if (mirrorResult.destroyed) {
           this.cubeRenderer?.removeBlockAt(mirror.face, mirror.col, mirror.row);
+          mirrorBrokenForBroadcast.push({ face: mirror.face, col: mirror.col, row: mirror.row });
           if (mirrorResult.spawnItem && mirrorResult.itemType) {
             const mirrorItem = new Item(this, mirror.face, mirror.col, mirror.row, mirrorResult.itemType);
             this.items.push(mirrorItem);
@@ -417,6 +770,15 @@ export class GameScene extends Phaser.Scene {
           }
         }
       }
+    }
+
+    // オンライン対戦のホストは、ゲスト側でも爆風エフェクト・ブロック破壊を
+    // 即座に反映できるよう単発イベントとして送る(周期的なstate同期だけだと
+    // 爆風の一瞬の見た目や破壊タイミングが揃わないため)。
+    if (this.config.mode === 'online') {
+      this.config.online.network.send(
+        buildExplosionEvent(bomb, tiles, broken, mirrorBrokenForBroadcast, isChainReaction)
+      );
     }
 
     // 爆風が届いたマス(同じ面のみ)にいるプレイヤーへダメージ
@@ -478,11 +840,20 @@ export class GameScene extends Phaser.Scene {
       item.destroy();
       this.items.splice(index, 1);
       soundSystem.playSE('item_get');
+
+      if (this.config.mode === 'online') {
+        this.config.online.network.send(buildItemPickupEvent(item, player.playerId));
+      }
     }
   }
 
   update(time, delta) {
     if (this.countdownActive) return;
+
+    if (this.config.mode === 'online' && this.config.online?.role === 'guest') {
+      this._updateGuest(time);
+      return;
+    }
 
     this._handleMovementInput();
 
@@ -507,6 +878,8 @@ export class GameScene extends Phaser.Scene {
       this.cubeRenderer.render(time);
     }
 
+    if (this.config.mode === 'online') this._broadcastStateIfDue(time);
+
     if (this.battleSystem.isOver && !this.resultTriggered) {
       this.resultTriggered = true;
       // PVP(人間複数)では「人間の誰かが勝ったか」で勝利/敗北SEを選ぶ
@@ -514,22 +887,52 @@ export class GameScene extends Phaser.Scene {
       soundSystem.playSE(humanWon ? 'victory' : 'defeat');
       soundSystem.stopBGM();
 
+      // rankingPlayerIds: ランキング(RankingSystem)に対戦結果を送信すべき
+      // 「このブラウザ(クライアント)が実際に操作していたプレイヤー」のID。
+      // ai/ローカルPVPでは1つの端末が試合全体を実行するのでhumanPlayerIds
+      // とそのまま同じでよいが、オンライン対戦ではホスト・各ゲストが
+      // それぞれ独立にResultSceneへ遷移するため、humanPlayerIds(=試合参加者
+      // 全員の人間プレイヤーID)をそのまま使うと、全員分のランキング行が
+      // クライアントの数だけ重複送信されてしまう。オンライン対戦時は
+      // 「自分の1人分」だけに絞る。
+      const rankingPlayerIds =
+        this.config.mode === 'online'
+          ? [this.humanPlayers?.[0]?.playerId].filter((id) => id != null)
+          : (this.humanPlayers ?? []).map((p) => p.playerId);
+
+      const resultPayload = {
+        winner: this.battleSystem.winner,
+        mode: this.config.mode,
+        humanPlayerIds: (this.humanPlayers ?? []).map((p) => p.playerId),
+        rankingPlayerIds,
+        players: this.players.map((p) => ({
+          playerId: p.playerId,
+          isAI: p.isAI,
+          stats: { ...p.stats },
+        })),
+        finalRanks: Object.fromEntries(this.battleSystem.finalRanks),
+      };
+
+      // オンライン対戦のホストは、ゲスト側も同じタイミングでリザルトへ
+      // 遷移できるよう結果をブロードキャストする。
+      if (this.config.mode === 'online') {
+        this.config.online.network.send(
+          buildResultEvent(this.battleSystem.winner?.playerId ?? null, resultPayload.players, resultPayload.finalRanks)
+        );
+      }
+
       this.time.delayedCall(1500, () => {
-        this.scene.start(SCENE_KEYS.RESULT, {
-          winner: this.battleSystem.winner,
-          humanPlayerIds: (this.humanPlayers ?? []).map((p) => p.playerId),
-          players: this.players.map((p) => ({
-            playerId: p.playerId,
-            isAI: p.isAI,
-            stats: { ...p.stats },
-          })),
-          finalRanks: Object.fromEntries(this.battleSystem.finalRanks),
-        });
+        this.scene.start(SCENE_KEYS.RESULT, resultPayload);
       });
     }
   }
 
-  /** 人間プレイヤー全員ぶん、それぞれの割り当てキー(_humanInputs)で移動入力を処理する */
+  /**
+   * 人間プレイヤーぶん移動入力を処理する。ローカル(ホスト自身を含む)は
+   * 割り当てキー(_humanInputs)を毎フレーム参照し、オンライン対戦で
+   * ネットワーク越しに参加している人間プレイヤーは、直近に届いた入力状態
+   * (_networkMoveStates、_onHostNetworkMessage参照)を参照する。
+   */
   _handleMovementInput() {
     const isBlockedByBomb = (face, col, row) => this._isTileOccupiedByBomb(face, col, row);
 
@@ -543,6 +946,15 @@ export class GameScene extends Phaser.Scene {
         player.tryMove('left', isBlockedByBomb);
       } else if (keys.right.isDown) {
         player.tryMove('right', isBlockedByBomb);
+      }
+    }
+
+    if (this._networkMoveStates) {
+      for (const [playerId, keysState] of this._networkMoveStates) {
+        const player = this.players.find((p) => p.playerId === playerId);
+        if (!player || !player.isAlive) continue;
+        const direction = pickDirectionFromKeys(keysState);
+        if (direction) player.tryMove(direction, isBlockedByBomb);
       }
     }
   }

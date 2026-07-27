@@ -4,17 +4,18 @@
  * タイトル画面。「ゲーム開始」「ランキング」「設定」「VRM変更」への
  * 導線を表示する。
  *
- * NOTE: 現状ローカルでの複数人操作（ホットシート対戦）には未対応のため、
- * 「ゲーム開始」は1人目のみ操作可能な対戦（残りはAIが埋める）としてLobby
- * Sceneへ遷移する。複数人分の操作系統が実装され次第、真のPVPモードを
- * 別途追加する想定。
+ * 「ゲーム開始」→LobbyScene: 参加人数・人間プレイヤー数(ローカルPVP、
+ * 同一キーボードでのホットシート対戦)・AI難易度・制限時間を選んで対戦する。
+ * 「オンライン対戦」→OnlineLobbyScene: Supabase Realtime経由で別々の
+ * 端末・ブラウザから対戦する(部屋の作成・コード入力での参加)。
+ * 「ランキング」→RankingScene: Supabase(未設定時はこの端末のローカル
+ * 履歴)から対戦結果ランキングを表示する。
  *
  * Phase2では「設定」画面（BGM/SE音量調整、Save.js経由で永続化）を実装する。
  * Phase3の第一歩として「VRM変更」でのVRMファイルアップロードにも対応した
  * （アップロード後の実際の見た目差し替えはGameScene側でVRMSystem経由で行う）。
  * ファイル本体はサイズの都合上このブラウザタブ内でのみ保持し、LocalStorage
- * にはファイル名のみ保存する（Save.js）。「ランキング」(Phase4)は引き続き
- * 導線のみ表示する。
+ * にはファイル名のみ保存する（Save.js）。
  * ------------------------------------------------------------
  */
 import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
@@ -37,25 +38,33 @@ export class TitleScene extends Phaser.Scene {
       .text(centerX, 70, 'くまっちボム！', { fontSize: '40px', color: '#ffffff' })
       .setOrigin(0.5);
 
-    this._createMenuButton(centerX, 180, 'ゲーム開始', () => {
+    this._createMenuButton(centerX, 155, 'ゲーム開始', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.LOBBY);
     });
 
-    this._createMenuButton(centerX, 280, 'ランキング（Phase4実装予定）', () => {}, true);
+    this._createMenuButton(centerX, 210, 'オンライン対戦', () => {
+      soundSystem.playSE('button');
+      this.scene.start(SCENE_KEYS.ONLINE_LOBBY);
+    });
 
-    this._createMenuButton(centerX, 335, '設定', () => {
+    this._createMenuButton(centerX, 265, 'ランキング', () => {
+      soundSystem.playSE('button');
+      this.scene.start(SCENE_KEYS.RANKING);
+    });
+
+    this._createMenuButton(centerX, 320, '設定', () => {
       soundSystem.playSE('button');
       this._toggleSettingsPanel();
     });
 
-    this._createMenuButton(centerX, 390, 'VRM変更', () => {
+    this._createMenuButton(centerX, 375, 'VRM変更', () => {
       soundSystem.playSE('button');
       this._openVrmFilePicker();
     });
 
     this.vrmStatusText = this.add
-      .text(centerX, 425, this._getVrmStatusLabel(), { fontSize: '13px', color: '#88ddaa' })
+      .text(centerX, 408, this._getVrmStatusLabel(), { fontSize: '13px', color: '#88ddaa' })
       .setOrigin(0.5);
 
     this.add
@@ -65,7 +74,7 @@ export class TitleScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    this._createSettingsPanel(centerX, 460);
+    this._createSettingsPanel(centerX, 440);
   }
 
   _getVrmStatusLabel() {
@@ -128,18 +137,47 @@ export class TitleScene extends Phaser.Scene {
     return text;
   }
 
-  /** BGM/SE音量を10%刻みで調整できる簡易設定パネル（Save.js経由で永続化） */
+  /** BGM/SE音量調整・プレイヤー名設定を行う簡易設定パネル（Save.js経由で永続化） */
   _createSettingsPanel(x, y) {
     const { bgm, se } = soundSystem.getVolume();
 
     this.settingsContainer = this.add.container(x, y);
     this.settingsContainer.setVisible(false);
 
-    const bg = this.add.rectangle(0, 35, 360, 110, 0x000000, 0.55);
+    const bg = this.add.rectangle(0, 55, 360, 150, 0x000000, 0.55);
     this.bgmRow = this._createVolumeRow(0, 0, 'BGM音量', bgm, (v) => soundSystem.setVolume('bgm', v));
     this.seRow = this._createVolumeRow(0, 45, 'SE音量', se, (v) => soundSystem.setVolume('se', v));
+    this.nameRow = this._createPlayerNameRow(0, 95);
 
-    this.settingsContainer.add([bg, this.bgmRow.container, this.seRow.container]);
+    this.settingsContainer.add([bg, this.bgmRow.container, this.seRow.container, this.nameRow.container]);
+  }
+
+  /**
+   * ランキング(RankingScene/RankingSystem)に記録する際の表示名を設定する行。
+   * このゲームには専用のログイン機構が無いため、ブラウザ標準のprompt()で
+   * 簡易的に入力してもらう(Save.getPlayerName/setPlayerName経由で永続化)。
+   */
+  _createPlayerNameRow(x, y) {
+    const container = this.add.container(x, y);
+    const labelText = this.add.text(-170, 0, 'ランキング表示名', { fontSize: '16px', color: '#ffffff' }).setOrigin(0, 0.5);
+    const valueText = this.add
+      .text(60, 0, Save.getPlayerName(), { fontSize: '16px', color: '#ffe066' })
+      .setOrigin(0.5);
+    const editBtn = this.add
+      .text(150, 0, '変更', { fontSize: '16px', color: '#ffffff', backgroundColor: '#3a3a3a', padding: { x: 10, y: 2 } })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    editBtn.on('pointerdown', () => {
+      soundSystem.playSE('button');
+      const input = window.prompt('ランキングに表示する名前を入力してください(最大12文字)', Save.getPlayerName());
+      if (!input) return;
+      const name = input.trim().slice(0, 12) || 'プレイヤー';
+      Save.setPlayerName(name);
+      valueText.setText(name);
+    });
+
+    container.add([labelText, valueText, editBtn]);
+    return { container };
   }
 
   _createVolumeRow(x, y, label, initialValue, onChange) {

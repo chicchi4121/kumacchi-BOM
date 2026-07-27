@@ -22,15 +22,16 @@ import {
 } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 
-const DIFFICULTY_ORDER = [AI_DIFFICULTY.EASY, AI_DIFFICULTY.NORMAL, AI_DIFFICULTY.HARD, AI_DIFFICULTY.EXPERT];
-const DIFFICULTY_LABEL = Object.freeze({
+// OnlineLobbyScene.js(オンライン対戦のロビー)でも同じ選択肢を使うためexportする。
+export const DIFFICULTY_ORDER = [AI_DIFFICULTY.EASY, AI_DIFFICULTY.NORMAL, AI_DIFFICULTY.HARD, AI_DIFFICULTY.EXPERT];
+export const DIFFICULTY_LABEL = Object.freeze({
   [AI_DIFFICULTY.EASY]: 'EASY',
   [AI_DIFFICULTY.NORMAL]: 'NORMAL',
   [AI_DIFFICULTY.HARD]: 'HARD',
   [AI_DIFFICULTY.EXPERT]: 'EXPERT',
 });
 // 末尾のnullは「制限時間なし」を表す特別値。
-const TIME_LIMIT_OPTIONS_SEC = [60, 120, 180, 300, null];
+export const TIME_LIMIT_OPTIONS_SEC = [60, 120, 180, 300, null];
 
 export class LobbyScene extends Phaser.Scene {
   constructor() {

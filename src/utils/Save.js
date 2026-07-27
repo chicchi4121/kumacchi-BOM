@@ -16,6 +16,7 @@ const KEYS = Object.freeze({
   VRM: `${STORAGE_PREFIX}vrm`,
   VOLUME: `${STORAGE_PREFIX}volume`,
   RANKING_CACHE: `${STORAGE_PREFIX}rankingCache`,
+  PLAYER_NAME: `${STORAGE_PREFIX}playerName`,
 });
 
 export class Save {
@@ -85,5 +86,14 @@ export class Save {
 
   static setRankingCache(rankingList) {
     Save._set(KEYS.RANKING_CACHE, rankingList);
+  }
+
+  /** ランキング・オンライン対戦で表示する名前(未設定時は「プレイヤー」) */
+  static getPlayerName() {
+    return Save._get(KEYS.PLAYER_NAME, 'プレイヤー');
+  }
+
+  static setPlayerName(name) {
+    Save._set(KEYS.PLAYER_NAME, name);
   }
 }

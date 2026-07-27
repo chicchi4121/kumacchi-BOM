@@ -22,6 +22,8 @@ export const ITEM_EMOJI = Object.freeze({
   [ITEM_TYPES.KICK]: '💥',
 });
 
+let nextItemInstanceId = 1;
+
 export class Item {
   /**
    * @param {Phaser.Scene} scene
@@ -29,13 +31,15 @@ export class Item {
    * @param {number} col
    * @param {number} row
    * @param {string} type
+   * @param {object} options - { id } オンライン対戦での状態同期用の安定ID(Bomb.js参照)
    */
-  constructor(scene, face, col, row, type) {
+  constructor(scene, face, col, row, type, options = {}) {
     this.scene = scene;
     this.face = face;
     this.col = col;
     this.row = row;
     this.type = type;
+    this.id = options.id ?? nextItemInstanceId++;
 
     // 3D(サイコロステージ)モードではCubeRendererが状態(face/col/row/type)を
     // 読み取って描画するため、Phaser用のスプライトは生成しない。

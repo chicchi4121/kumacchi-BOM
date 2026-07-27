@@ -8,6 +8,8 @@
 import { SCREEN_WIDTH, SCREEN_HEIGHT, TARGET_FPS } from './constants/GameConstants.js';
 import { TitleScene } from './scenes/TitleScene.js';
 import { LobbyScene } from './scenes/LobbyScene.js';
+import { OnlineLobbyScene } from './scenes/OnlineLobbyScene.js';
+import { RankingScene } from './scenes/RankingScene.js';
 import { GameScene } from './scenes/GameScene.js';
 import { ResultScene } from './scenes/ResultScene.js';
 import { PauseScene } from './scenes/PauseScene.js';
@@ -31,7 +33,7 @@ const config = {
   },
   // Phase1は見下ろし型のグリッド移動のみのため物理エンジンは未使用。
   // Phase3以降で必要になった場合にArcade Physics等を追加する。
-  scene: [TitleScene, LobbyScene, GameScene, ResultScene, PauseScene],
+  scene: [TitleScene, LobbyScene, OnlineLobbyScene, RankingScene, GameScene, ResultScene, PauseScene],
 };
 
 window.addEventListener('load', () => {

@@ -5,7 +5,8 @@
  * 順位・撃破数・爆破数・取得アイテム数・獲得経験値を実データで表示する。
  * 経験値計算式はEXP_PER_*定数（GameConstants.js）で一元管理している。
  *
- * ランキング更新（Supabase送信）はPhase4実装予定のため引き続き導線のみ。
+ * RankingSystem経由でSupabaseへ対戦結果を送信する(Supabase未設定時は
+ * この端末のローカル履歴にのみ保存される。RankingSystem.js参照)。
  * ------------------------------------------------------------
  */
 import {
@@ -18,6 +19,8 @@ import {
   EXP_WIN_BONUS,
 } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
+import { rankingSystem } from '../systems/RankingSystem.js';
+import { Save } from '../utils/Save.js';
 
 export class ResultScene extends Phaser.Scene {
   constructor() {
@@ -26,8 +29,14 @@ export class ResultScene extends Phaser.Scene {
 
   init(data) {
     this.winnerPlayerId = data?.winner?.playerId ?? null;
+    this.mode = data?.mode ?? 'ai';
     // PVP(人間2人以上)では勝敗判定・「あなた」表示の対象が複数人になりうるため配列で保持する。
     this.humanPlayerIds = data?.humanPlayerIds ?? (data?.humanPlayerId != null ? [data.humanPlayerId] : []);
+    // ランキング(Supabase)へ実際に送信すべき対象。オンライン対戦では
+    // 「このブラウザが操作していた自分の1人分」だけに絞る(GameScene参照。
+    // humanPlayerIdsをそのまま使うと、ホスト・各ゲストが同じ試合の結果を
+    // それぞれ独立に送信してしまい、参加者全員分が重複記録されてしまう)。
+    this.rankingPlayerIds = data?.rankingPlayerIds ?? this.humanPlayerIds;
     this.players = data?.players ?? [];
     this.finalRanks = data?.finalRanks ?? {};
   }
@@ -49,13 +58,13 @@ export class ResultScene extends Phaser.Scene {
 
     this._renderTable(centerX, 140);
 
-    // TODO(Phase4): RankingSystem経由でSupabaseにランキング反映する。
-    this.add
-      .text(centerX, SCREEN_HEIGHT - 90, 'ランキング更新（Phase4実装予定）', {
+    this.rankingStatusText = this.add
+      .text(centerX, SCREEN_HEIGHT - 90, 'ランキングに記録中...', {
         fontSize: '14px',
         color: '#888888',
       })
       .setOrigin(0.5);
+    this._submitRankingResults();
 
     const backText = this.add
       .text(centerX, SCREEN_HEIGHT - 40, 'タイトルに戻る', {
@@ -71,6 +80,52 @@ export class ResultScene extends Phaser.Scene {
       soundSystem.stopBGM();
       this.scene.start(SCENE_KEYS.TITLE);
     });
+  }
+
+  /**
+   * ランキングに、このブラウザが操作していた人間プレイヤーぶんの結果を
+   * 送信する(rankingPlayerIds参照)。失敗してもゲーム進行には影響しない
+   * (開発ルール8と同じ考え方。RankingSystem内部でローカル保存にも
+   * フォールバックする)。
+   */
+  async _submitRankingResults() {
+    if (!this.rankingPlayerIds || this.rankingPlayerIds.length === 0) {
+      this.rankingStatusText?.setText('');
+      return;
+    }
+
+    const baseName = Save.getPlayerName();
+    // ローカルPVP(同一ブラウザで複数人)のみ、同じ名前が並ばないよう
+    // 「(P2)」のように操作枠番号を付ける。オンライン対戦は各自別ブラウザ
+    // なので付けない。
+    const isLocalMultiHuman = this.mode !== 'online' && this.humanPlayerIds.length > 1;
+
+    try {
+      for (const playerId of this.rankingPlayerIds) {
+        const player = this.players.find((p) => p.playerId === playerId);
+        if (!player) continue;
+        const rank = this.finalRanks[playerId] ?? this.finalRanks[String(playerId)] ?? null;
+        const isWinner = playerId === this.winnerPlayerId;
+        const exp = this._calcExp(player.stats, isWinner);
+        const slotIndex = this.humanPlayerIds.indexOf(playerId);
+        const playerName = isLocalMultiHuman && slotIndex >= 0 ? `${baseName}(P${slotIndex + 1})` : baseName;
+
+        await rankingSystem.submitResult({
+          playerName,
+          mode: this.mode,
+          rank,
+          kills: player.stats.kills,
+          bombsExploded: player.stats.bombsExploded,
+          itemsCollected: player.stats.itemsCollected,
+          exp,
+          isHuman: true,
+        });
+      }
+      this.rankingStatusText?.setText('ランキングに記録しました');
+    } catch (e) {
+      console.warn('[ResultScene] ランキングへの送信に失敗しました(ローカルには保存済みです)。', e);
+      this.rankingStatusText?.setText('ランキング送信に失敗しました(ローカルには保存済み)');
+    }
   }
 
   _calcExp(stats, isWinner) {

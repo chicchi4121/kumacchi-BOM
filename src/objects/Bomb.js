@@ -9,6 +9,8 @@
 import { TILE_SIZE, BOMB_FUSE_MS, DEPTH } from '../constants/GameConstants.js';
 import { Collision } from '../utils/Collision.js';
 
+let nextBombInstanceId = 1;
+
 export class Bomb {
   /**
    * @param {Phaser.Scene} scene
@@ -23,6 +25,10 @@ export class Bomb {
     this.face = face;
     this.col = col;
     this.row = row;
+    // オンライン対戦(NetworkSystem)でホスト→ゲスト間の状態同期・差分検出に
+    // 使う安定ID。JSオブジェクトの参照そのものはネットワーク越しに送れない
+    // ため、数値IDで爆弾を識別できるようにする(Playerのplayeridと同じ用途)。
+    this.id = options.id ?? nextBombInstanceId++;
     this.ownerId = options.ownerId ?? null;
     this.blastRange = options.blastRange ?? 1;
     this.onDetonate = options.onDetonate ?? (() => {});

@@ -122,6 +122,8 @@ export const KEYS = Object.freeze({
 export const SCENE_KEYS = Object.freeze({
   TITLE: 'TitleScene',
   LOBBY: 'LobbyScene',
+  ONLINE_LOBBY: 'OnlineLobbyScene',
+  RANKING: 'RankingScene',
   GAME: 'GameScene',
   RESULT: 'ResultScene',
   PAUSE: 'PauseScene',
@@ -137,6 +139,38 @@ export const DEPTH = Object.freeze({
   PLAYER: 25,
   UI: 100,
 });
+
+// --- オンライン対戦(Supabase Realtime)設定 -------------------------------
+// ローカルPVP(同一キーボードでのホットシート、HUMAN_KEY_MAPS)とは別に、
+// 別々の端末・ブラウザからSupabase Realtimeのbroadcast/presence経由で
+// 対戦できるオンラインPVPに対応する(NetworkSystem.js/NetworkProtocol.js)。
+// アーキテクチャ: ホスト(部屋を作った側)の端末だけがゲームロジック全体
+// (マップ生成・AI・爆弾・アイテム・勝敗判定)を実行する「ホスト権威型」。
+// ゲスト(部屋に参加した側)はホストから届く状態(state)・イベント
+// (explosion/item_pickup等)を描画するだけで、自分のキー入力はホストへ
+// 送信するのみ(ローカルでは移動処理を行わない)。これにより盤面のズレ
+// (デシンク)が原理的に起こらない設計にしている。
+export const NETWORK_STATE_BROADCAST_INTERVAL_MS = 100; // ホスト→全員: 状態同期の送信間隔(約10Hz)
+export const NETWORK_INPUT_SEND_INTERVAL_MS = 50; // ゲスト→ホスト: 入力送信間隔(約20Hz)
+export const NETWORK_INIT_REQUEST_RETRY_MS = 1500; // ゲスト: match_init未受信時の再送要求間隔
+export const ROOM_CODE_LENGTH = 5;
+// 誤読しやすい0/O・1/Iを除いた文字だけで部屋コードを生成する。
+export const ROOM_CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+// オンライン対戦は同一キーボードでのキー競合が無い(各プレイヤーが自分の
+// 端末で操作する)ため、ローカルPVPのMAX_HUMAN_PLAYERS(4、物理キー制約)
+// より緩く、面の数と同じ最大6人まで対応する。
+export const MAX_ONLINE_PLAYERS = MAX_PLAYERS;
+// マップ生成結果(ブロック種別)をネットワーク越しに送る際の1文字エンコード。
+// 文字列化してデータ量を抑える(1マス1文字、1面11x11=121文字)。
+export const BLOCK_TYPE_CHAR = Object.freeze({
+  [BLOCK_TYPES.EMPTY]: '.',
+  [BLOCK_TYPES.HARD]: '#',
+  [BLOCK_TYPES.SOFT]: '+',
+  [BLOCK_TYPES.ITEM]: '$',
+});
+export const CHAR_BLOCK_TYPE = Object.freeze(
+  Object.fromEntries(Object.entries(BLOCK_TYPE_CHAR).map(([type, char]) => [char, type]))
+);
 
 // --- サイコロ6面ステージ設定 ---------------------------------------------
 // バトルエリアを1枚の平面マップではなく、立方体(サイコロ)の6つの面を
