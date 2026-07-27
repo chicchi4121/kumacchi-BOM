@@ -6,7 +6,7 @@
  * Bombは「いつ・誰が・どこで・どの範囲で」爆発するかの情報のみを持つ。
  * ------------------------------------------------------------
  */
-import { TILE_SIZE, BOMB_FUSE_MS, DEPTH } from '../constants/GameConstants.js';
+import { TILE_SIZE, BOMB_FUSE_MS, BOMB_KICK_SLIDE_DURATION_MS, DEPTH } from '../constants/GameConstants.js';
 import { Collision } from '../utils/Collision.js';
 
 let nextBombInstanceId = 1;
@@ -33,7 +33,19 @@ export class Bomb {
     this.blastRange = options.blastRange ?? 1;
     this.onDetonate = options.onDetonate ?? (() => {});
     this.detonated = false;
-    this.kickable = false; // TODO(Phase2): 💥アイテム所持時にtrueとして蹴り移動を許可する
+
+    // --- 💥(KICK)アイテムによる蹴り移動用(見た目の補間はPlayerと同じ
+    //     _prevFace/_prevCol/_prevRow + getMoveProgress()方式を流用する。
+    //     CubeRenderer._updateBombsがこれらのフィールドの有無を見て、
+    //     あれば位置を補間しながら描画する)。蹴る能力自体は「蹴ろうとする
+    //     プレイヤー」側が持つ(Player.canKickBombs)ため、爆弾自身は
+    //     蹴れるかどうかの状態を持たない(GameScene._tryKickBomb参照)。
+    this._prevFace = face;
+    this._prevCol = col;
+    this._prevRow = row;
+    this._isSliding = false;
+    this._moveStartAt = 0;
+    this._moveDurationMs = BOMB_KICK_SLIDE_DURATION_MS;
 
     // 3D(サイコロステージ)モードでは見た目はCubeRendererがPlayerと同様に
     // 状態(face/col/row/detonated)を読み取って描画するため、Phaser用の
@@ -62,6 +74,42 @@ export class Bomb {
       yoyo: true,
       repeat: -1,
     });
+  }
+
+  /**
+   * 💥(KICK)所持プレイヤーに蹴られて、同じ面内の別マスへ移動する。
+   * 見た目の補間はPlayer.tryMove()と同じ考え方(位置は即座に更新し、
+   * CubeRendererがgetMoveProgress()を使って前の位置から見た目だけ
+   * 滑らかに補間する)。面をまたいだスライドは非対応(v1の割り切り。
+   * GameScene._tryKickBomb参照)。
+   * @param {number} col
+   * @param {number} row
+   * @param {number} now - scene.time.now(呼び出し側の現在時刻)
+   * @param {number} tileCount - 何マス分スライドしたか(距離に応じてアニメーション時間を伸ばす)
+   */
+  slideTo(col, row, now, tileCount = 1) {
+    this._prevFace = this.face;
+    this._prevCol = this.col;
+    this._prevRow = this.row;
+    this.col = col;
+    this.row = row;
+    this._isSliding = true;
+    this._moveStartAt = now;
+    this._moveDurationMs = BOMB_KICK_SLIDE_DURATION_MS * Math.max(1, tileCount);
+    this.scene.time.delayedCall(this._moveDurationMs, () => {
+      this._isSliding = false;
+    });
+  }
+
+  /**
+   * 現在の見た目のスライド進捗を0(移動元)〜1(移動先=現在のcol/row)で返す。
+   * Player.getMoveProgress()と同じ考え方(CubeRenderer._updateBombs参照)。
+   * @param {number} now
+   */
+  getMoveProgress(now) {
+    if (!this._isSliding) return 1;
+    const raw = (now - this._moveStartAt) / this._moveDurationMs;
+    return Math.max(0, Math.min(1, raw));
   }
 
   /** 誘爆・自然爆発どちらからも呼び出される爆発処理の入口 */

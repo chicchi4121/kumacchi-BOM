@@ -13,6 +13,24 @@ export const GRID_COLS = 15; // マップの横マス数（奇数推奨：迷路
 export const GRID_ROWS = 11; // マップの縦マス数（奇数推奨）
 export const SCREEN_WIDTH = TILE_SIZE * GRID_COLS;
 export const SCREEN_HEIGHT = TILE_SIZE * GRID_ROWS + 64; // 下部UI分の余白
+// ↑SCREEN_WIDTH/SCREEN_HEIGHTは、GameScene以外のメニュー系シーン
+// (Title/Lobby/OnlineLobby/Ranking/Result/Pause)の元々の固定レイアウト
+// 計算にのみ使う想定の値（これらのシーンは実行時にthis.scale.width/height
+// で中央揃えし直すため、実際にはブラウザの実サイズに追従する）。
+// GameScene(対戦画面)はScale.RESIZEでブラウザの実サイズいっぱいに表示する
+// ため、この固定値をそのままステージ枠のサイズとしては使わない
+// (下記「対戦画面レイアウト」参照)。
+
+// --- 対戦画面レイアウト(GameScene) ---------------------------------------
+// 「画面の上下はブラウザの大きさに合わせて、右側の空いている部分に
+// 各プレイヤーの情報を表示してほしい」という要望に対応するため、
+// GameSceneはPhaser.Scale.RESIZEモードでブラウザの実サイズいっぱいに
+// 表示する(main.js参照)。画面右側にHUD_PANEL_WIDTH分の固定幅を確保して
+// 各プレイヤーの情報パネルを表示し、残りの(左側)領域を3Dバトルステージ
+// (#cube-canvas)の表示領域にする。STAGE_VIEWPORT_MIN_WIDTHは、非常に
+// 狭いウィンドウでもステージが極端に潰れないようにする下限。
+export const HUD_PANEL_WIDTH = 260;
+export const STAGE_VIEWPORT_MIN_WIDTH = 480;
 
 // --- パフォーマンス目標 -----------------------------------------
 export const TARGET_FPS = 60;
@@ -38,6 +56,19 @@ export const PLAYER_COLOR_FILTERS = Object.freeze({
   green: 'hue-rotate(120deg)',
   black: 'saturate(0.3) brightness(0.3)',
   white: 'saturate(0.2) brightness(1.9)',
+});
+
+// PLAYER_COLORSの各色名 -> 16進カラーコード。CubeRenderer(Three.js、
+// プレースホルダーの色付き四角)とGameScene(HUDの右側プレイヤー情報パネル)
+// の両方から参照する共通値(データ駆動: 開発ルール6。同じ色を2箇所で
+// 個別に定義してズレるのを防ぐ)。
+export const PLAYER_COLOR_HEX = Object.freeze({
+  red: 0xe74c3c,
+  blue: 0x3498db,
+  yellow: 0xf1c40f,
+  green: 0x2ecc71,
+  black: 0x2c3e50,
+  white: 0xecf0f1,
 });
 
 // --- ローカル対戦(PVP)設定 ------------------------------------------
@@ -80,8 +111,27 @@ export const ITEM_TYPES = Object.freeze({
   SHIELD: 'shield', // 🛡 5秒無敵
   LIFE_UP: 'life_up', // ❤️ 残機+1
   GHOST: 'ghost', // 👻 壊せるブロックを通過可能
-  KICK: 'kick', // 💥 爆弾キック
+  KICK: 'kick', // 💥 爆弾キック(蹴って移動させられる)
 });
+
+// 各アイテムの出現しやすさの重み(データ駆動: 開発ルール6)。Stage.js側で
+// この重みに従って「アイテム候補プール」を組み立てる(重み2のタイプが
+// 重み1のタイプの2倍出現しやすい、という単純な多重化方式)。
+// 「壁抜け(GHOST)は強力なので出現量を半分にしてほしい」という要望に対応し、
+// GHOSTのみ他の半分の重みにしてある。
+export const ITEM_SPAWN_WEIGHTS = Object.freeze({
+  [ITEM_TYPES.BOMB_UP]: 2,
+  [ITEM_TYPES.FIRE_UP]: 2,
+  [ITEM_TYPES.SPEED_UP]: 2,
+  [ITEM_TYPES.SHIELD]: 2,
+  [ITEM_TYPES.LIFE_UP]: 2,
+  [ITEM_TYPES.GHOST]: 1,
+  [ITEM_TYPES.KICK]: 2,
+});
+
+// 💥(KICK)アイテムを持つプレイヤーが爆弾へ向かって移動した際、爆弾を
+// 何マス先まで滑らせるかの1マスあたりのアニメーション時間。
+export const BOMB_KICK_SLIDE_DURATION_MS = 90;
 
 // --- 必殺技設定 ------------------------------------------------------
 export const SKILL_GAUGE_MAX = 100;

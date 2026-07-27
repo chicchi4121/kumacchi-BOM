@@ -58,6 +58,18 @@ export class Player {
     this.isMoving = false;
     this.facing = 'down';
 
+    // 「一人1回まで爆弾に当たっても大丈夫なようにしてほしい」という要望に
+    // 対応: 各プレイヤーは試合中1回だけ、爆風に当たってもライフを失わない
+    // (takeDamage参照)。無敵アイテム(🛡)とは独立した別枠で、消費後は
+    // 通常通りライフが減る。
+    this.hasBombGrace = true;
+
+    // 「倒れたキャラクターが取ったアイテムを落とすようにしてほしい」に
+    // 対応するため、取得したアイテム種別を履歴として保持しておく
+    // (GameScene._dropItemsOnDeathが撃破時にこれを見て同種のアイテムを
+    // マップ上に落とす)。
+    this.collectedItemTypes = [];
+
     // --- 見た目の補間用(レンダラーが読み取る。Playerはこの値を書くだけ) ---
     this._prevFace = startFace;
     this._prevCol = startCol;
@@ -144,9 +156,23 @@ export class Player {
     this.activeBombCount = Math.max(0, this.activeBombCount - 1);
   }
 
-  /** 爆風やAI等からのダメージ処理。無敵中は無効化する */
+  /**
+   * 爆風やAI等からのダメージ処理。無敵中は無効化する。
+   * 「一人1回まで爆弾に当たっても大丈夫なように」との要望により、各
+   * プレイヤーは試合中1回だけ、ライフを失わずに被弾を無効化できる
+   * (hasBombGrace)。無敵アイテム(🛡)とは別枠で、こちらを消費した後も
+   * 通常の無敵アイテムは引き続き機能する。猶予を使った場合も、被弾直後の
+   * 連続ヒット防止のため短い無敵時間を付与する。
+   * @returns {boolean} ライフが実際に減った(=通常のダメージが発生した)場合true。
+   *   猶予で無効化された場合や、既に無敵/死亡していた場合はfalse。
+   */
   takeDamage() {
     if (!this.isAlive || this.isInvincible) return false;
+    if (this.hasBombGrace) {
+      this.hasBombGrace = false;
+      this.invincibleUntil = this.scene.time.now + 1500;
+      return false;
+    }
     this.lives -= 1;
     if (this.lives <= 0) {
       this.isAlive = false;

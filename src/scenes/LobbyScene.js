@@ -14,8 +14,6 @@
  */
 import {
   SCENE_KEYS,
-  SCREEN_WIDTH,
-  SCREEN_HEIGHT,
   MAX_PLAYERS,
   MAX_HUMAN_PLAYERS,
   AI_DIFFICULTY,
@@ -54,7 +52,10 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   create() {
-    const centerX = SCREEN_WIDTH / 2;
+    // GameSceneはScale.RESIZEでブラウザの実サイズいっぱいに表示される
+    // (main.js参照)ため、固定のSCREEN_WIDTHではなくその時点の実サイズ
+    // (this.scale.width)を基準に中央揃えする。
+    const centerX = this.scale.width / 2;
 
     this.add
       .text(centerX, 50, '対戦設定', { fontSize: '28px', color: '#ffffff' })

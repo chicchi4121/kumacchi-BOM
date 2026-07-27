@@ -11,7 +11,7 @@
  * 累計exp降順)。
  * ------------------------------------------------------------
  */
-import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
+import { SCENE_KEYS } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { rankingSystem } from '../systems/RankingSystem.js';
 import { isSupabaseConfigured } from '../config/supabaseConfig.js';
@@ -22,7 +22,11 @@ export class RankingScene extends Phaser.Scene {
   }
 
   async create() {
-    const centerX = SCREEN_WIDTH / 2;
+    // GameSceneはScale.RESIZEでブラウザの実サイズいっぱいに表示される
+    // (main.js参照)ため、固定のSCREEN_WIDTH/HEIGHTではなくその時点の
+    // 実サイズ(this.scale.width/height)を基準に配置する。
+    const centerX = this.scale.width / 2;
+    const screenHeight = this.scale.height;
     this._sceneActive = true;
     this.events.once('shutdown', () => {
       this._sceneActive = false;
@@ -40,7 +44,7 @@ export class RankingScene extends Phaser.Scene {
       .setOrigin(0.5, 0);
 
     const backBtn = this.add
-      .text(centerX, SCREEN_HEIGHT - 40, 'タイトルに戻る', {
+      .text(centerX, screenHeight - 40, 'タイトルに戻る', {
         fontSize: '20px',
         color: '#ffffff',
         backgroundColor: '#3a3a3a',

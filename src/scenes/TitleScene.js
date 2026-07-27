@@ -18,7 +18,7 @@
  * にはファイル名のみ保存する（Save.js）。
  * ------------------------------------------------------------
  */
-import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
+import { SCENE_KEYS } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { vrmSystem } from '../systems/VRMSystem.js';
 import { Save } from '../utils/Save.js';
@@ -31,7 +31,10 @@ export class TitleScene extends Phaser.Scene {
   }
 
   create() {
-    const centerX = SCREEN_WIDTH / 2;
+    // GameSceneはScale.RESIZEでブラウザの実サイズいっぱいに表示される
+    // (main.js参照)ため、固定のSCREEN_WIDTH/HEIGHTではなくその時点の
+    // 実サイズ(this.scale.width/height)を基準に中央揃えする。
+    const centerX = this.scale.width / 2;
     soundSystem.playBGM('title');
 
     this.add
@@ -68,7 +71,7 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(centerX, SCREEN_HEIGHT - 30, '操作: ↑↓←→ 移動 / Space 爆弾設置 / Esc ポーズ', {
+      .text(centerX, this.scale.height - 30, '操作: ↑↓←→ 移動 / Space 爆弾設置 / Esc ポーズ', {
         fontSize: '14px',
         color: '#aaaaaa',
       })

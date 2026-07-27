@@ -24,8 +24,6 @@
  */
 import {
   SCENE_KEYS,
-  SCREEN_WIDTH,
-  SCREEN_HEIGHT,
   MAX_PLAYERS,
   MAX_ONLINE_PLAYERS,
   AUTO_MATCH_LOBBY_CODE,
@@ -63,7 +61,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
   }
 
   async create() {
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
     this._sceneActive = true;
 
     this.add.text(centerX, 50, 'オンライン対戦', { fontSize: '28px', color: '#ffffff' }).setOrigin(0.5);
@@ -92,14 +90,14 @@ export class OnlineLobbyScene extends Phaser.Scene {
   _showChecking() {
     this._clearBody();
     const text = this.add
-      .text(SCREEN_WIDTH / 2, 200, 'Supabaseの接続状況を確認中...', { fontSize: '16px', color: '#cccccc' })
+      .text(this.scale.width / 2, 200, 'Supabaseの接続状況を確認中...', { fontSize: '16px', color: '#cccccc' })
       .setOrigin(0.5);
     this.bodyContainer.add(text);
   }
 
   _showUnavailable() {
     this._clearBody();
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
     const lines = [
       'Supabaseが設定されていないため、オンライン対戦は利用できません。',
       '',
@@ -116,7 +114,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
   _showModeSelect() {
     this._clearBody();
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
     const autoMatchBtn = this._createButton(centerX, 160, 'オートマッチング(自動で対戦相手を探す)', () => this._startAutoMatch());
     const createBtn = this._createButton(centerX, 225, '部屋を作る(ホスト)', () => this._createRoom());
     const joinBtn = this._createButton(centerX, 290, '部屋に参加する(コード入力)', () => this._promptJoinRoom());
@@ -132,7 +130,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
   async _startAutoMatch() {
     this._clearBody();
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
     this._autoMatchStatusText = this.add
       .text(centerX, 180, 'オートマッチング中...\n他のプレイヤーを探しています', { fontSize: '16px', color: '#cccccc', align: 'center' })
       .setOrigin(0.5);
@@ -299,7 +297,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
   async _createRoom() {
     this._clearBody();
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
     const statusText = this.add.text(centerX, 150, '部屋を作成中...', { fontSize: '16px', color: '#cccccc' }).setOrigin(0.5);
     this.bodyContainer.add(statusText);
 
@@ -317,7 +315,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
   _showHostRoom(roomCode) {
     this._clearBody();
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
 
     const codeLabel = this.add
       .text(centerX, 110, `部屋コード: ${roomCode}`, { fontSize: '26px', color: '#ffe066' })
@@ -461,7 +459,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
   async _joinRoom(roomCode) {
     this._clearBody();
-    const centerX = SCREEN_WIDTH / 2;
+    const centerX = this.scale.width / 2;
     const statusText = this.add
       .text(centerX, 200, `部屋(${roomCode})に接続中...`, { fontSize: '16px', color: '#cccccc' })
       .setOrigin(0.5);

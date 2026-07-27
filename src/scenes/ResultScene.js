@@ -11,8 +11,6 @@
  */
 import {
   SCENE_KEYS,
-  SCREEN_WIDTH,
-  SCREEN_HEIGHT,
   EXP_PER_KILL,
   EXP_PER_BOMB_EXPLODED,
   EXP_PER_ITEM_COLLECTED,
@@ -42,7 +40,11 @@ export class ResultScene extends Phaser.Scene {
   }
 
   create() {
-    const centerX = SCREEN_WIDTH / 2;
+    // GameSceneはScale.RESIZEでブラウザの実サイズいっぱいに表示されるため
+    // (main.js/GameScene.js参照)、固定のSCREEN_WIDTH/HEIGHTではなく、
+    // その時点の実サイズ(this.scale.width/height)を基準に中央揃えする。
+    const centerX = this.scale.width / 2;
+    const screenHeight = this.scale.height;
     const isHumanWinner = this.winnerPlayerId !== null && this.humanPlayerIds.includes(this.winnerPlayerId);
     const isPvp = this.humanPlayerIds.length > 1;
     soundSystem.playSE(this.players.length > 0 ? (isHumanWinner ? 'victory' : 'defeat') : 'button');
@@ -59,7 +61,7 @@ export class ResultScene extends Phaser.Scene {
     this._renderTable(centerX, 140);
 
     this.rankingStatusText = this.add
-      .text(centerX, SCREEN_HEIGHT - 90, 'ランキングに記録中...', {
+      .text(centerX, screenHeight - 90, 'ランキングに記録中...', {
         fontSize: '14px',
         color: '#888888',
       })
@@ -67,7 +69,7 @@ export class ResultScene extends Phaser.Scene {
     this._submitRankingResults();
 
     const backText = this.add
-      .text(centerX, SCREEN_HEIGHT - 40, 'タイトルに戻る', {
+      .text(centerX, screenHeight - 40, 'タイトルに戻る', {
         fontSize: '20px',
         color: '#ffffff',
         backgroundColor: '#3a3a3a',

@@ -17,13 +17,19 @@ import {
   ITEM_BLOCK_RATE,
   SAFE_ZONE_RADIUS,
   MAX_PLAYERS,
-  ITEM_TYPES,
+  ITEM_SPAWN_WEIGHTS,
 } from '../constants/GameConstants.js';
 import { Collision } from '../utils/Collision.js';
 import { random } from '../utils/Random.js';
 
-// 出現しうるアイテム種別一覧（データ駆動：ここに追加するだけで出現候補が増える）
-const SPAWNABLE_ITEM_TYPES = Object.values(ITEM_TYPES);
+// 出現しうるアイテム種別一覧（データ駆動：ITEM_SPAWN_WEIGHTS(GameConstants.js)
+// の重みに従って各タイプを複製した「候補プール」から等確率でpickする方式。
+// 例えば重み2のタイプは重み1のタイプの2倍出現しやすくなる。「壁抜け(GHOST)
+// の出現量を半分にしてほしい」という要望にはGHOSTの重みを他の半分にする
+// ことで対応した）
+const SPAWNABLE_ITEM_TYPES = Object.entries(ITEM_SPAWN_WEIGHTS).flatMap(([type, weight]) =>
+  Array(weight).fill(type)
+);
 
 function tileKey(col, row) {
   return `${col},${row}`;

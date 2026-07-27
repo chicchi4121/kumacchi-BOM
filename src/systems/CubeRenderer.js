@@ -38,6 +38,7 @@ import {
   CUBE_FACE_ROWS,
   BLOCK_TYPES,
   PLAYER_COLORS,
+  PLAYER_COLOR_HEX,
   EXPLOSION_LIFETIME_MS,
   CUBE_ROLL_DURATION_MS,
 } from '../constants/GameConstants.js';
@@ -63,15 +64,6 @@ const BLOCK_COLORS = Object.freeze({
   [BLOCK_TYPES.HARD]: 0x555555,
   [BLOCK_TYPES.SOFT]: 0xa0623b,
   [BLOCK_TYPES.ITEM]: 0xc98a54,
-});
-
-const PLAYER_COLOR_HEX = Object.freeze({
-  red: 0xe74c3c,
-  blue: 0x3498db,
-  yellow: 0xf1c40f,
-  green: 0x2ecc71,
-  black: 0x2c3e50,
-  white: 0xecf0f1,
 });
 
 function cellKey(face, col, row) {
@@ -381,9 +373,24 @@ export class CubeRenderer {
     this._bombMeshes.delete(bomb);
   }
 
+  /**
+   * 爆弾の「今にも爆発しそう」な拍動アニメーションに加え、💥(KICK)で
+   * 蹴られてスライド移動中の爆弾があれば、その位置補間も行う。
+   * Bomb.js側がgetMoveProgress(now)/_prevFace等(Playerと同じ補間用の
+   * フィールド)を持っている場合のみ位置補間する(持っていない場合=
+   * オンライン対戦のゲスト側ミラーオブジェクト等は、従来通り静的な
+   * 位置のまま。スライドの滑らかな見た目は現状ホスト/ローカルのみの
+   * 対応というv1の割り切り)。
+   */
   _updateBombs(now) {
-    for (const mesh of this._bombMeshes.values()) {
+    for (const [bomb, mesh] of this._bombMeshes.entries()) {
       mesh.scale.setScalar(1 + 0.12 * Math.sin(now / 130));
+      if (typeof bomb.getMoveProgress === 'function' && bomb._prevFace) {
+        const progress = bomb.getMoveProgress(now);
+        const [fx, fy, fz] = cellWorldPos(bomb._prevFace, bomb._prevCol, bomb._prevRow, CUBE_FACE_COLS, CUBE_FACE_ROWS, ENTITY_OUTWARD * 0.7);
+        const [tx, ty, tz] = cellWorldPos(bomb.face, bomb.col, bomb.row, CUBE_FACE_COLS, CUBE_FACE_ROWS, ENTITY_OUTWARD * 0.7);
+        mesh.position.set(fx + (tx - fx) * progress, fy + (ty - fy) * progress, fz + (tz - fz) * progress);
+      }
     }
   }
 

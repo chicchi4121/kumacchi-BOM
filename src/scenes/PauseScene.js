@@ -5,7 +5,7 @@
  * 再開または降参してタイトルへ戻る導線を提供する。
  * ------------------------------------------------------------
  */
-import { SCENE_KEYS, SCREEN_WIDTH, SCREEN_HEIGHT } from '../constants/GameConstants.js';
+import { SCENE_KEYS } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 
 export class PauseScene extends Phaser.Scene {
@@ -14,18 +14,26 @@ export class PauseScene extends Phaser.Scene {
   }
 
   create() {
-    const overlay = this.add.rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0x000000, 0.6);
+    // GameSceneはScale.RESIZEモードでブラウザの実サイズに合わせて画面全体を
+    // 使う(main.js/GameScene.js参照)ため、固定のSCREEN_WIDTH/SCREEN_HEIGHT
+    // ではなく、その時点の実サイズ(this.scale.width/height)を使って
+    // オーバーレイ・中央のボタンを配置する(そうしないと画面の一部にしか
+    // 暗幕がかからず、ボタンも画面中央からズレて表示されてしまう)。
+    const screenWidth = this.scale.width;
+    const screenHeight = this.scale.height;
+
+    const overlay = this.add.rectangle(0, 0, screenWidth, screenHeight, 0x000000, 0.6);
     overlay.setOrigin(0, 0);
 
     this.add
-      .text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 40, 'ポーズ中', {
+      .text(screenWidth / 2, screenHeight / 2 - 40, 'ポーズ中', {
         fontSize: '32px',
         color: '#ffffff',
       })
       .setOrigin(0.5);
 
     const resumeText = this.add
-      .text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 20, '再開する (Esc)', {
+      .text(screenWidth / 2, screenHeight / 2 + 20, '再開する (Esc)', {
         fontSize: '20px',
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
@@ -39,7 +47,7 @@ export class PauseScene extends Phaser.Scene {
     });
 
     const titleText = this.add
-      .text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 70, 'タイトルに戻る', {
+      .text(screenWidth / 2, screenHeight / 2 + 70, 'タイトルに戻る', {
         fontSize: '20px',
         color: '#ffffff',
         backgroundColor: '#3a3a3a',

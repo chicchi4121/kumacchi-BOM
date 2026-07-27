@@ -27,6 +27,11 @@ const SE_DEFINITIONS = Object.freeze({
     { freq: 440, duration: 0.08, type: 'sine', gain: 0.3 },
     { freq: 660, duration: 0.14, type: 'sine', gain: 0.3, delay: 0.08 },
   ],
+  // 「一人1回まで爆弾に当たっても大丈夫」の猶予を消費して助かった際の合図音
+  bomb_grace: [
+    { freq: 880, duration: 0.06, type: 'triangle', gain: 0.28 },
+    { freq: 990, duration: 0.1, type: 'triangle', gain: 0.28, delay: 0.06 },
+  ],
   victory: [
     { freq: 523.25, duration: 0.16, type: 'triangle', gain: 0.3 },
     { freq: 659.25, duration: 0.16, type: 'triangle', gain: 0.3, delay: 0.16 },

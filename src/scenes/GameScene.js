@@ -26,13 +26,12 @@
  */
 import {
   SCENE_KEYS,
-  SCREEN_WIDTH,
-  SCREEN_HEIGHT,
   DEPTH,
   COUNTDOWN_STEPS,
   COUNTDOWN_STEP_MS,
   PLAYER_COLORS,
   PLAYER_COLOR_FILTERS,
+  PLAYER_COLOR_HEX,
   HUMAN_KEY_MAPS,
   MAX_HUMAN_PLAYERS,
   MAX_ONLINE_PLAYERS,
@@ -40,6 +39,7 @@ import {
   NETWORK_INPUT_SEND_INTERVAL_MS,
   NETWORK_INIT_REQUEST_RETRY_MS,
 } from '../constants/GameConstants.js';
+import { computeBattleLayout } from '../utils/ViewportLayout.js';
 import { CubeStage } from '../objects/CubeStage.js';
 import { Player } from '../objects/Player.js';
 import { Bomb } from '../objects/Bomb.js';
@@ -66,6 +66,16 @@ import {
 } from '../systems/NetworkProtocol.js';
 
 const DEFAULT_VRM_PATH = 'assets/vrm/kumacchi.vrm';
+
+// 💥(KICK)アイテムによる爆弾の蹴り移動・アイテムの死亡ドロップ探索で使う
+// 4方向ベクトル(CubeStage内部のDIRECTION_VECTORSと同じ値だが非公開のため
+// ここに複製する)。
+const DIRECTION_VECTORS = Object.freeze({
+  up: { dCol: 0, dRow: -1 },
+  down: { dCol: 0, dRow: 1 },
+  left: { dCol: -1, dRow: 0 },
+  right: { dCol: 1, dRow: 0 },
+});
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -127,6 +137,7 @@ export class GameScene extends Phaser.Scene {
 
     this._createPlayers(totalParticipants);
     this._createHud();
+    this._buildPlayerCards();
     this._createInput();
 
     this.aiSystem = new AISystem();
@@ -248,7 +259,7 @@ export class GameScene extends Phaser.Scene {
     this._createGuestInput();
 
     this._guestStatusText = this.add
-      .text(SCREEN_WIDTH / 2, (SCREEN_HEIGHT - 64) / 2, 'ホストの対戦情報を受信中...', {
+      .text(this._layout.stageWidth / 2, this._layout.totalHeight / 2, 'ホストの対戦情報を受信中...', {
         fontSize: '18px',
         color: '#ffffff',
         backgroundColor: '#000000aa',
@@ -343,6 +354,7 @@ export class GameScene extends Phaser.Scene {
     );
     this.humanPlayer = this.players.find((p) => p.playerId === this.myPlayerId) ?? this.players[0] ?? null;
     this.humanPlayers = this.humanPlayer ? [this.humanPlayer] : [];
+    this._buildPlayerCards();
 
     // BattleSystem本体は持たず、HUD/勝敗表示に必要な最小限のフィールドだけを
     // 持つミラーを用意する(実際の勝敗判定はホストが行い、stateメッセージで
@@ -382,6 +394,19 @@ export class GameScene extends Phaser.Scene {
       const mirror = { id: b.id, face: b.face, col: b.col, row: b.row, detonated: false };
       this._bombMirrorsById.set(b.id, mirror);
       this.cubeRenderer?.addBomb(mirror);
+    }
+    // 💥(KICK)で蹴られた爆弾は同じidのまま位置(col/row)だけが変わるため、
+    // diffById(追加/削除の検出のみ)には現れない。既存の爆弾ミラーの位置も
+    // 毎回上書きしておくことで、ゲスト側でも蹴られた爆弾の移動が反映される
+    // (見た目のスライド補間はしない簡易版。ホスト側のBomb.slideTo()による
+    // なめらかな補間に比べると簡素だが、~100ms間隔の同期なので実用上問題ない)。
+    for (const b of msg.bombs ?? []) {
+      const mirror = this._bombMirrorsById.get(b.id);
+      if (mirror) {
+        mirror.face = b.face;
+        mirror.col = b.col;
+        mirror.row = b.row;
+      }
     }
     this.bombs = Array.from(this._bombMirrorsById.values());
 
@@ -509,7 +534,7 @@ export class GameScene extends Phaser.Scene {
    */
   async _loadAllVrmAppearances() {
     const statusText = this.add
-      .text(SCREEN_WIDTH - 10, 10, 'VRM読み込み中...', {
+      .text(this._layout.stageWidth - 10, 10, 'VRM読み込み中...', {
         fontSize: '13px',
         color: '#88ddaa',
         backgroundColor: '#000000aa',
@@ -517,6 +542,7 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(1, 0)
       .setDepth(DEPTH.UI);
+    this._vrmStatusText = statusText;
 
     const setStatus = (label, color) => {
       if (!this._sceneActive) return;
@@ -576,6 +602,9 @@ export class GameScene extends Phaser.Scene {
           textureSet[facing] = this.cubeRenderer.createCanvasTexture(primarySnapshotSet[facing]);
         }
         this.cubeRenderer.setPlayerTextures(this.humanPlayer.playerId, textureSet);
+        // 「自分の画像アイコンも情報と一緒に表示してほしい」への対応:
+        // 右側パネルの自分のカードにも同じスナップショット(正面向き)を使う。
+        if (primarySnapshotSet.down) this._setPlayerCardIcon(this.humanPlayer.playerId, primarySnapshotSet.down);
       }
 
       if (enemyBaseSnapshotSet) {
@@ -589,6 +618,9 @@ export class GameScene extends Phaser.Scene {
             textureSet[facing] = this.cubeRenderer.createCanvasTexture(tintedSet[facing]);
           }
           this.cubeRenderer.setPlayerTextures(player.playerId, textureSet);
+          // 「敵プレイヤーの画像アイコンも表示してほしい」への対応:
+          // 右側パネルの各プレイヤーカードにも色調補正済みスナップショットを使う。
+          if (tintedSet.down) this._setPlayerCardIcon(player.playerId, tintedSet.down);
         }
       }
 
@@ -629,16 +661,153 @@ export class GameScene extends Phaser.Scene {
     this.humanPlayer = this.humanPlayers[0];
   }
 
+  /**
+   * 対戦画面のHUDを構築する。
+   *
+   * 「画面の上下はブラウザの大きさに合わせて、右側の空いている部分に
+   * 各プレイヤーの情報を表示してほしい」との要望に対応し、画面右側に
+   * 固定幅のパネル(this._panelContainer)を確保して各プレイヤーの
+   * カード(アイコン+ステータス)を並べ、3Dバトルステージ(#cube-canvas)は
+   * 残りの左側領域だけに表示させる(実際のサイズ計算はViewportLayout.js/
+   * main.jsと共有)。パネル自体はここで箱だけ作り、実際の各プレイヤーの
+   * カードは_buildPlayerCards()で(this.playersが確定してから)作る
+   * (オンライン対戦のゲストは、この時点ではまだ人数が確定していないため)。
+   */
   _createHud() {
-    // PVP(人間プレイヤー複数)では1人1行になり行数が増えるため、下端固定では
-    // 画面からはみ出す恐れがある。上端からの表示に変更し、下方向へ伸びる
-    // ようにする。
+    this._layout = computeBattleLayout(this.scale.width, this.scale.height);
+
+    // 全体の残り時間・生存人数など、対局全体のステータスはステージ側
+    // 左上に小さく表示する(各プレイヤー個別の情報は右側パネルへ移した)。
     this.hudText = this.add.text(10, 10, '', {
       fontSize: '15px',
       color: '#ffffff',
       lineSpacing: 4,
     });
     this.hudText.setDepth(DEPTH.UI);
+
+    this._panelContainer = this.add.container(this._layout.stageWidth, 0);
+    this._panelContainer.setDepth(DEPTH.UI);
+    this._panelBg = this.add.rectangle(0, 0, this._layout.panelWidth, this._layout.totalHeight, 0x14181c, 0.92).setOrigin(0, 0);
+    this._panelTitle = this.add
+      .text(this._layout.panelWidth / 2, 14, 'プレイヤー', { fontSize: '16px', color: '#ffffff', fontStyle: 'bold' })
+      .setOrigin(0.5, 0);
+    this._panelContainer.add([this._panelBg, this._panelTitle]);
+    this._playerCards = new Map();
+
+    // ウィンドウサイズが変わるたびにステージ幅・パネル幅を再計算し、
+    // パネル・カウントダウン・VRM読込状況テキストの位置を追従させる。
+    this.scale.on('resize', (gameSize) => this._onGameResize(gameSize));
+  }
+
+  /** ウィンドウのリサイズに追従して、対戦画面右側パネル・中央寄せ要素の位置を再計算する */
+  _onGameResize(gameSize) {
+    if (!this._sceneActive) return;
+    this._layout = computeBattleLayout(gameSize.width, gameSize.height);
+    this._panelContainer?.setPosition(this._layout.stageWidth, 0);
+    this._panelBg?.setSize(this._layout.panelWidth, this._layout.totalHeight);
+    this._panelTitle?.setPosition(this._layout.panelWidth / 2, 14);
+    this._vrmStatusText?.setPosition(this._layout.stageWidth - 10, 10);
+    this._guestStatusText?.setPosition(this._layout.stageWidth / 2, this._layout.totalHeight / 2);
+    if (this.countdownText) {
+      this.countdownText.setPosition(this._layout.stageWidth / 2, this._layout.totalHeight / 2);
+    }
+  }
+
+  /**
+   * this.players確定後(または人数変化後)に、右側パネルの各プレイヤー
+   * カード(アイコン+名前+ステータス)を作り直す。ホスト/ローカルは
+   * create()から、ゲストはmatch_init受信直後(_applyMatchInit)から
+   * それぞれ呼ばれる(呼ばれるタイミングでthis.playersの人数が異なる
+   * ため、カード自体もその都度作り直す)。
+   */
+  _buildPlayerCards() {
+    if (!this._panelContainer) return;
+    for (const card of this._playerCards.values()) {
+      for (const el of card.elements) el.destroy();
+    }
+    this._playerCards.clear();
+
+    const cardHeight = 96;
+    const startY = 44;
+    this.players.forEach((player, index) => {
+      const card = this._createPlayerCard(player, startY + index * cardHeight, cardHeight);
+      this._panelContainer.add(card.elements);
+      this._playerCards.set(player.playerId, card);
+    });
+    this._updateHud();
+  }
+
+  /** 1人分のプレイヤーカード(アイコン+名前+ステータステキスト)を作る。画像アイコンは後からVRM読込完了時に差し替わる(_setPlayerCardIcon参照) */
+  _createPlayerCard(player, y, height) {
+    const panelWidth = this._layout.panelWidth;
+    const iconSize = 56;
+    const iconX = 14;
+    const iconCenterX = iconX + iconSize / 2;
+    const iconCenterY = y + 8 + iconSize / 2;
+
+    const colorName = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
+    const iconBg = this.add.circle(iconCenterX, iconCenterY, iconSize / 2, PLAYER_COLOR_HEX[colorName] ?? 0x888888);
+    iconBg.setStrokeStyle(2, 0xffffff, 0.7);
+
+    const nameText = this.add
+      .text(iconX + iconSize + 10, y + 4, this._playerCardLabel(player), {
+        fontSize: '13px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0, 0);
+    const statusText = this.add
+      .text(iconX + iconSize + 10, y + 24, '', {
+        fontSize: '12px',
+        color: '#dddddd',
+        lineSpacing: 3,
+      })
+      .setOrigin(0, 0);
+    const divider = this.add.rectangle(panelWidth / 2, y + height - 4, panelWidth - 20, 1, 0xffffff, 0.15);
+
+    return {
+      player,
+      iconBg,
+      iconImage: null,
+      nameText,
+      statusText,
+      elements: [iconBg, nameText, statusText, divider],
+      iconCenterX,
+      iconCenterY,
+      iconSize,
+    };
+  }
+
+  /** プレイヤーカードに表示する名前ラベル(自分/他プレイヤー/AIを判別する) */
+  _playerCardLabel(player) {
+    if (player.isAI) return `AI (P${player.playerId})`;
+    const isPrimarySelf = player === this.humanPlayer;
+    const idx = (this.humanPlayers ?? []).indexOf(player);
+    const label = `プレイヤー${idx >= 0 ? idx + 1 : player.playerId}`;
+    return isPrimarySelf ? `${label} (あなた)` : label;
+  }
+
+  /**
+   * プレイヤーのVRMアイコン(down向きスナップショット)をカードに反映する。
+   * _loadAllVrmAppearances()からプレイヤーごとのcanvasスナップショットが
+   * 用意できたタイミングで呼ばれる。「自分・敵プレイヤーの画像アイコンも
+   * 情報と一緒に表示してほしい」という要望への対応。
+   * @param {number} playerId
+   * @param {HTMLCanvasElement} canvas - down向きスナップショット
+   */
+  _setPlayerCardIcon(playerId, canvas) {
+    const card = this._playerCards?.get(playerId);
+    if (!card || !this._sceneActive) return;
+    const textureKey = `player-icon-${playerId}`;
+    if (this.textures.exists(textureKey)) this.textures.remove(textureKey);
+    this.textures.addCanvas(textureKey, canvas);
+
+    card.iconImage?.destroy();
+    const image = this.add.image(card.iconCenterX, card.iconCenterY, textureKey);
+    image.setDisplaySize(card.iconSize - 6, card.iconSize - 6);
+    card.iconImage = image;
+    card.iconBg.setFillStyle(card.iconBg.fillColor, 0.35); // 背景の色付き円はアイコンの縁取りとして薄く残す
+    this._panelContainer.add(image);
   }
 
   /**
@@ -783,6 +952,25 @@ export class GameScene extends Phaser.Scene {
       );
     }
 
+    // 「アイテムは爆弾で壊れるようにしてほしい」への対応:
+    // 爆風が届いたマスに既に置かれていたアイテムを破壊する。ここで判定に
+    // 使うのは「この爆発で壊れたブロックからアイテムが出現する前」の
+    // this.itemsのスナップショットにする必要がある。そうしないと、直後の
+    // 破壊ブロック処理で新しく出現したアイテム(壊れたブロックの中身)を
+    // その場で即座に壊してしまう(=アイテム入りブロックを壊しても何も
+    // 手に入らなくなる)事故が起きるため。
+    const itemsDestroyedByBlast = this.items.filter(
+      (it) => it.face === bomb.face && tiles.some((t) => t.col === it.col && t.row === it.row)
+    );
+    if (itemsDestroyedByBlast.length > 0) {
+      const destroyedSet = new Set(itemsDestroyedByBlast);
+      for (const item of itemsDestroyedByBlast) {
+        this.cubeRenderer?.removeItem(item);
+        item.destroy();
+      }
+      this.items = this.items.filter((it) => !destroyedSet.has(it));
+    }
+
     // 爆風が届いたマス(同じ面のみ)にいるプレイヤーへダメージ
     for (const player of this.players) {
       if (!player.isAlive || player.face !== bomb.face) continue;
@@ -790,10 +978,17 @@ export class GameScene extends Phaser.Scene {
       if (!hit) continue;
 
       const wasAlive = player.isAlive;
-      player.takeDamage();
+      const hadGrace = player.hasBombGrace;
+      const tookRealDamage = player.takeDamage();
+      // 「一人1回まで爆弾に当たっても大丈夫」の猶予を消費して助かった場合の合図音
+      if (!tookRealDamage && hadGrace && !player.hasBombGrace) {
+        soundSystem.playSE('bomb_grace');
+      }
       if (wasAlive && !player.isAlive) {
         this.battleSystem.notifyPlayerDied(player);
         if (owner && owner !== player) owner.stats.kills++;
+        // 「キャラクターを倒したら、取ったアイテムを落とすようにしてほしい」への対応
+        this._dropItemsOnDeath(player);
       }
     }
 
@@ -812,6 +1007,80 @@ export class GameScene extends Phaser.Scene {
     owner?.onBombResolved();
   }
 
+  /**
+   * 「キャラクターを倒したら、取ったアイテムを落とすようにしてほしい」への対応。
+   * 死亡したプレイヤーがそれまでに取得したアイテム種別ぶん、死亡地点付近の
+   * 空きマスにアイテムを再出現させる。死亡地点そのものは直前の爆風で
+   * 埋まっている可能性が高いため、_findNearbyEmptyTilesで周辺を探索する。
+   * オンライン対戦でも、新規アイテムの出現は既存の周期的state同期
+   * (buildStateMessage)でゲスト側へ自然に伝わるため、専用の通信メッセージは
+   * 不要（NetworkProtocol.jsのitem追加/削除diffの仕組みをそのまま利用）。
+   * @param {Player} player
+   */
+  _dropItemsOnDeath(player) {
+    const itemTypes = player.collectedItemTypes ?? [];
+    player.collectedItemTypes = [];
+    if (itemTypes.length === 0) return;
+
+    const tiles = this._findNearbyEmptyTiles(player.face, player.col, player.row, itemTypes.length);
+    itemTypes.forEach((itemType, i) => {
+      const tile = tiles[i];
+      if (!tile) return; // 周辺に空きマスが足りない場合はその分は諦める(通常はほぼ起きない)
+      const item = new Item(this, player.face, tile.col, tile.row, itemType);
+      this.items.push(item);
+      this.cubeRenderer?.addItem(item);
+    });
+  }
+
+  /**
+   * 指定の面のoriginCol/originRowを起点に、幅優先探索(BFS)で近い順に
+   * 「アイテムを置ける空きマス」をcount個見つける。壁(HARD/SOFT/ITEM)は
+   * 越えて探索しない(通行可能=EMPTYなマスのみを辿る)ため、行き止まりに
+   * 死亡した場合は見つかる数が少なくなることがある。
+   * @param {string} face
+   * @param {number} originCol
+   * @param {number} originRow
+   * @param {number} count
+   * @returns {Array<{col:number,row:number}>}
+   */
+  _findNearbyEmptyTiles(face, originCol, originRow, count) {
+    const results = [];
+    if (count <= 0) return results;
+
+    const isOccupied = (col, row) =>
+      this._isTileOccupiedByBomb(face, col, row) ||
+      this.items.some((it) => it.face === face && it.col === col && it.row === row) ||
+      this.players.some((p) => p.isAlive && p.face === face && p.col === col && p.row === row);
+
+    const visited = new Set([`${originCol},${originRow}`]);
+    if (this.stage.canPlaceBombAt(face, originCol, originRow) && !isOccupied(originCol, originRow)) {
+      results.push({ col: originCol, row: originRow });
+    }
+
+    let frontier = [{ col: originCol, row: originRow }];
+    let guard = 0;
+    while (frontier.length > 0 && results.length < count && guard < 2000) {
+      const nextFrontier = [];
+      for (const { col, row } of frontier) {
+        for (const dir of Object.values(DIRECTION_VECTORS)) {
+          const nCol = col + dir.dCol;
+          const nRow = row + dir.dRow;
+          const key = `${nCol},${nRow}`;
+          if (visited.has(key)) continue;
+          visited.add(key);
+          guard++;
+          if (!this.stage.canPlaceBombAt(face, nCol, nRow)) continue; // 壁はここで探索を打ち切る
+          if (results.length < count && !isOccupied(nCol, nRow)) {
+            results.push({ col: nCol, row: nRow });
+          }
+          nextFrontier.push({ col: nCol, row: nRow });
+        }
+      }
+      frontier = nextFrontier;
+    }
+    return results;
+  }
+
   /** 現在フィールドに存在する爆弾の爆風予測範囲を集計する（AIの危険地帯回避に使用） */
   _computeDangerTiles() {
     const dangerTiles = new Set();
@@ -826,18 +1095,33 @@ export class GameScene extends Phaser.Scene {
     return dangerTiles;
   }
 
-  /** プレイヤーが乗っているマスにアイテムがあれば取得・効果適用する */
+  /**
+   * プレイヤーが乗っているマスにアイテムがあれば取得・効果適用する。
+   *
+   * 【修正】以前は`player.isMoving`が真の間は取得判定をスキップしていたが、
+   * Player.tryMove()はマス移動を開始した瞬間にcol/rowを移動先へ即座に
+   * 更新し(isMovingは見た目の補間演出のためだけの状態)、キーを押し続けて
+   * 連続移動している間は「isMovingがfalseに戻った直後のフレームで
+   * 即座に次のtryMoveが呼ばれてisMovingが再度trueになる」ため、
+   * アイテムの上に乗った瞬間を取得判定側が捉えられず「ちょうど止まった
+   * 場合しか拾えない」という不具合になっていた。col/rowは移動中も既に
+   * 移動先を指しているため、isMovingの状態に関わらずcol/row一致だけで
+   * 判定すれば「アイテムの上を通っただけで取れる」ようになる。
+   */
   _handleItemPickup() {
     if (this.items.length === 0) return;
 
     for (const player of this.players) {
-      if (!player.isAlive || player.isMoving) continue;
+      if (!player.isAlive) continue;
       const index = this.items.findIndex((it) => it.face === player.face && it.col === player.col && it.row === player.row);
       if (index === -1) continue;
 
       const item = this.items[index];
       ItemSystem.applyItem(player, item.type, this);
       player.stats.itemsCollected++;
+      // 「キャラクターを倒したら取ったアイテムを落とす」ための記録
+      // (_dropItemsOnDeath参照)。
+      player.collectedItemTypes.push(item.type);
       this.cubeRenderer?.removeItem(item);
       item.destroy();
       this.items.splice(index, 1);
@@ -936,18 +1220,16 @@ export class GameScene extends Phaser.Scene {
    * (_networkMoveStates、_onHostNetworkMessage参照)を参照する。
    */
   _handleMovementInput() {
-    const isBlockedByBomb = (face, col, row) => this._isTileOccupiedByBomb(face, col, row);
-
     for (const { player, keys } of this._humanInputs ?? []) {
       if (!player.isAlive) continue;
       if (keys.up.isDown) {
-        player.tryMove('up', isBlockedByBomb);
+        this._moveOrKick(player, 'up');
       } else if (keys.down.isDown) {
-        player.tryMove('down', isBlockedByBomb);
+        this._moveOrKick(player, 'down');
       } else if (keys.left.isDown) {
-        player.tryMove('left', isBlockedByBomb);
+        this._moveOrKick(player, 'left');
       } else if (keys.right.isDown) {
-        player.tryMove('right', isBlockedByBomb);
+        this._moveOrKick(player, 'right');
       }
     }
 
@@ -956,9 +1238,75 @@ export class GameScene extends Phaser.Scene {
         const player = this.players.find((p) => p.playerId === playerId);
         if (!player || !player.isAlive) continue;
         const direction = pickDirectionFromKeys(keysState);
-        if (direction) player.tryMove(direction, isBlockedByBomb);
+        if (direction) this._moveOrKick(player, direction);
       }
     }
+  }
+
+  /**
+   * 「爆弾を蹴れるアイテムを追加してほしい」への対応。
+   * まず通常通りPlayer.tryMove()を試み、成功すればそれで終わり。
+   * 移動できなかった場合で、かつプレイヤーが💥(KICK)を持っていれば、
+   * 進もうとした先が「同じ面の未爆発の爆弾のマス」かどうかを
+   * CubeStage.resolveMove()で覗き見て判定し、該当すれば爆弾を
+   * その方向へ滑らせる(_tryKickBomb)。蹴った瞬間はまだ爆弾がそのマスに
+   * 残っているため、プレイヤー自身の移動は次フレーム以降(爆弾が
+   * どいた後)に持ち越しになる(自然な「まず蹴る→間を置いて進む」動作)。
+   * @param {Player} player
+   * @param {'up'|'down'|'left'|'right'} direction
+   */
+  _moveOrKick(player, direction) {
+    const isBlockedByBomb = (face, col, row) => this._isTileOccupiedByBomb(face, col, row);
+    const moved = player.tryMove(direction, isBlockedByBomb);
+    if (moved || !player.canKickBombs || player.isMoving) return moved;
+
+    const resolved = this.stage.resolveMove(player.face, player.col, player.row, direction);
+    if (!resolved) return false;
+    if (!this.stage.isWalkable(resolved.face, resolved.col, resolved.row, { canPassSoftBlock: player.canPassSoftBlock })) {
+      return false;
+    }
+    // 面をまたいだ先の爆弾はキック対象外(Bomb.slideTo参照: 蹴りは同一面内のみ)。
+    if (resolved.face !== player.face) return false;
+
+    const bomb = this.bombs.find(
+      (b) => !b.detonated && !b._isSliding && b.face === resolved.face && b.col === resolved.col && b.row === resolved.row
+    );
+    if (!bomb) return false;
+
+    this._tryKickBomb(bomb, direction);
+    return false;
+  }
+
+  /**
+   * 爆弾を指定方向へ1マスずつ滑らせ、壁・他の爆弾・他プレイヤーにぶつかる
+   * 直前まで進める。1マスも動かせなかった場合は何もしない。
+   * @param {Bomb} bomb
+   * @param {'up'|'down'|'left'|'right'} direction
+   * @returns {boolean} 1マス以上スライドできた場合true
+   */
+  _tryKickBomb(bomb, direction) {
+    const vec = DIRECTION_VECTORS[direction];
+    if (!vec) return false;
+
+    let col = bomb.col;
+    let row = bomb.row;
+    let moved = 0;
+    let guard = 0;
+    while (guard < 64) {
+      guard++;
+      const nCol = col + vec.dCol;
+      const nRow = row + vec.dRow;
+      if (!this.stage.canPlaceBombAt(bomb.face, nCol, nRow)) break;
+      if (this._isTileOccupiedByBomb(bomb.face, nCol, nRow)) break;
+      if (this.players.some((p) => p.isAlive && p.face === bomb.face && p.col === nCol && p.row === nRow)) break;
+      col = nCol;
+      row = nRow;
+      moved++;
+    }
+    if (moved === 0) return false;
+
+    bomb.slideTo(col, row, this.time.now, moved);
+    return true;
   }
 
   /** 残り時間の表示用文字列。「制限時間なし」(timeLimitMs=Infinity)なら∞と表示する */
@@ -969,24 +1317,51 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * PVP(人間プレイヤーが複数)対応: 全員ぶんのステータスを1行ずつ表示する。
-   * ソロ+AIモード(人間1人)では従来通り1行のみになる。
+   * 全体の状況(生存人数・残り時間)をステージ左上に、各プレイヤーの
+   * 詳細(残機・爆弾・爆風・所持効果・順位)は右側パネルの各カードに表示する。
+   * 「各プレイヤーの情報や自分の情報を表示させてほしい」という要望に対応し、
+   * 人間・AI問わず全プレイヤーぶんのカードを毎フレーム更新する。
    */
   _updateHud() {
-    if (!this.humanPlayers || this.humanPlayers.length === 0) return;
-    const alive = this.players.filter((p) => p.isAlive).length;
+    const alive = this.players?.filter((p) => p.isAlive).length ?? 0;
     const remainingLabel = this._formatRemainingTime();
+    this.hudText?.setText(`生存: ${alive}/${this.players?.length ?? 0}   残り時間: ${remainingLabel}`);
 
-    const lines = this.humanPlayers.map((player, index) => {
-      const liveRank = this.battleSystem.getLiveRank(player);
-      const label = this.humanPlayers.length > 1 ? `P${index + 1} ` : '';
-      return (
-        `${label}面:${player.face} 残機:${player.lives} ` +
-        `爆弾:${player.activeBombCount}/${player.maxBombs} 爆風:${player.blastRange} 順位:${liveRank ?? '-'}`
-      );
-    });
-    lines.push(`生存: ${alive}/${this.players.length}   残り時間: ${remainingLabel}`);
+    for (const player of this.players ?? []) {
+      const card = this._playerCards?.get(player.playerId);
+      if (card) this._refreshPlayerCard(card, player);
+    }
+  }
 
-    this.hudText.setText(lines);
+  /** 1枚のプレイヤーカードの表示内容(残機・爆弾・所持効果・生死)を最新のPlayer状態に合わせて更新する */
+  _refreshPlayerCard(card, player) {
+    if (!player.isAlive) {
+      card.statusText.setText('撃破されました');
+      card.nameText.setAlpha(0.45);
+      card.statusText.setAlpha(0.45);
+      card.iconBg.setAlpha(0.35);
+      card.iconImage?.setAlpha(0.35);
+      return;
+    }
+    card.nameText.setAlpha(1);
+    card.statusText.setAlpha(1);
+    card.iconBg.setAlpha(1);
+    card.iconImage?.setAlpha(1);
+
+    const badges = [];
+    if (player.speedMultiplier > 1) badges.push('👟');
+    if (player.canPassSoftBlock) badges.push('👻');
+    if (player.canKickBombs) badges.push('💥');
+    if (player.isInvincible) badges.push('🛡');
+    // 「一人1回まで爆弾に当たっても大丈夫」の猶予をまだ持っているかどうかも
+    // 各プレイヤーの情報として一覧できるようにする。
+    if (player.hasBombGrace) badges.push('🛟');
+    const badgeStr = badges.length ? ` ${badges.join('')}` : '';
+
+    const liveRank = this.battleSystem?.getLiveRank ? this.battleSystem.getLiveRank(player) : null;
+    card.statusText.setText(
+      `❤️${player.lives}  💣${player.activeBombCount}/${player.maxBombs}  🔥${player.blastRange}${badgeStr}\n` +
+        `面:${player.face}  順位:${liveRank ?? '-'}`
+    );
   }
 }
