@@ -165,18 +165,36 @@ export class OnlineLobbyScene extends Phaser.Scene {
     this._clearBody();
     const centerX = this.scale.width / 2;
     const s = this._uiScale ?? 1;
-    this.add.text(centerX, 110 * s, 'オートマッチング', { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0.5);
+    // 「オートマッチング設定の文字が文字化けしている」への対応の一環として、
+    // このヒント文にもwordWrapを付ける(狭い画面で折り返さず画面外まで伸びて
+    // 表示が崩れるのを防ぐ)。
+    const wrapWidth = Math.max(220, this.scale.width * 0.85);
+    const titleY = 100 * s;
+    this.add.text(centerX, titleY, 'オートマッチング', { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0.5);
+    const hintY = 135 * s;
     const hintLabel = this.add
-      .text(centerX, 145 * s, '自分で条件を決めて探すか、既に探している相手にそのまま参加するか選べます', {
+      .text(centerX, hintY, '自分で条件を決めて探すか、既に探している相手にそのまま参加するか選べます', {
         fontSize: scaledFontPx(12, s),
         color: '#aaaaaa',
         align: 'center',
+        wordWrap: { width: wrapWidth },
       })
       .setOrigin(0.5);
 
-    const searchBtn = this._createButton(centerX, 200 * s, '検索する(人数・難易度・制限時間を決めて探す)', () => this._showAutoMatchSettings());
-    const joinBtn = this._createButton(centerX, 260 * s, '参加する(今探している相手にそのまま入る)', () => this._startAutoMatch());
-    const backBtn = this._createButton(centerX, 320 * s, '戻る', () => this._showModeSelect());
+    // ヒント文が折り返して複数行になった場合でもボタンと重ならないよう、
+    // 固定オフセットではなくヒント文の実測の高さ(hintLabel.height。wordWrap
+    // 込みの実測値)を基準にボタン位置を決める。テスト環境(fake Phaser)では
+    // heightが未定義になるため、その場合は十分に余裕を持たせた既定値に
+    // フォールバックする。
+    const hintBottom = hintY + (hintLabel.height || 40 * s) / 2;
+    const btnGap = 55 * s;
+    const searchBtnY = hintBottom + 30 * s;
+    const joinBtnY = searchBtnY + btnGap;
+    const backBtnY = joinBtnY + btnGap;
+
+    const searchBtn = this._createButton(centerX, searchBtnY, '検索する(人数・難易度・制限時間を決めて探す)', () => this._showAutoMatchSettings());
+    const joinBtn = this._createButton(centerX, joinBtnY, '参加する(今探している相手にそのまま入る)', () => this._startAutoMatch());
+    const backBtn = this._createButton(centerX, backBtnY, '戻る', () => this._showModeSelect());
 
     this.bodyContainer.add([hintLabel, searchBtn, joinBtn, backBtn]);
   }
@@ -200,20 +218,48 @@ export class OnlineLobbyScene extends Phaser.Scene {
     this._clearBody();
     const centerX = this.scale.width / 2;
     const s = this._uiScale ?? 1;
-    this.add.text(centerX, 110 * s, 'オートマッチング設定', { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0.5);
+    // 「オートマッチング設定の文字が文字化けしている」への対応:
+    // このヒント文はwordWrapを指定していなかったため、狭い画面では
+    // 1行のまま画面外まで伸びて表示が崩れ、文字化けしたように見えて
+    // いた。wordWrapで画面幅に収まるよう折り返すようにする。
+    const wrapWidth = Math.max(220, this.scale.width * 0.85);
+    const titleY = 100 * s;
+    this.add.text(centerX, titleY, 'オートマッチング設定', { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0.5);
+    const hintY = 132 * s;
     const hintLabel = this.add
-      .text(centerX, 138 * s, 'ここで選んだ内容は、あなたが対戦部屋を作る役(先着順)になった場合に使われます', {
-        fontSize: scaledFontPx(12, s),
-        color: '#aaaaaa',
-        align: 'center',
-      })
+      .text(
+        centerX,
+        hintY,
+        'ここで選んだ内容は、あなたが対戦部屋を作る役(先着順)になった場合に使われます。\n(集まった人数が希望人数に足りない場合、不足分はAIで補充されます)',
+        {
+          fontSize: scaledFontPx(12, s),
+          color: '#aaaaaa',
+          align: 'center',
+          wordWrap: { width: wrapWidth },
+        }
+      )
       .setOrigin(0.5);
 
+    // ヒント文は狭い画面では折り返して行数が増える(最大4行程度)ため、
+    // 固定オフセットのままだと画面幅によっては次の希望人数の行と重なって
+    // しまう。固定値ではなくヒント文の実測の高さ(hintLabel.height。wordWrap
+    // 込みの実測値)を基準に、以降の行の位置を動的に決める。テスト環境
+    // (fake Phaser)ではheightが未定義になるため、その場合は行数が最大に
+    // なった場合でも重ならない程度の既定値にフォールバックする。
+    const hintBottom = hintY + (hintLabel.height || 56 * s) / 2;
+    const rowGap = 42 * s;
+
+    // 「オートマッチングの参加人数設定の人数を選ぶ項目の文字が大きすぎて
+    // 見えなくなっている」への対応: 従来は値の表示に"4人(不足分はAIで
+    // 補充)"のような長い文字列を使っており、+/-ボタンの間の限られた幅に
+    // 収まらず文字がボタンと重なって読めなくなっていた。値表示は短い
+    // "4人"のみにし、AI補充についての説明は上のヒント文に移した。
+    const participantY = hintBottom + rowGap;
     const participantRow = this._createStepperRow(
       centerX,
-      190 * s,
+      participantY,
       '希望人数',
-      () => `${this.autoMatchSettings.participantCount}人(不足分はAIで補充)`,
+      () => `${this.autoMatchSettings.participantCount}人`,
       {
         onDecrease: () => {
           this.autoMatchSettings.participantCount = Math.max(2, this.autoMatchSettings.participantCount - 1);
@@ -224,9 +270,10 @@ export class OnlineLobbyScene extends Phaser.Scene {
       }
     );
 
+    const difficultyY = participantY + rowGap;
     const difficultyRow = this._createStepperRow(
       centerX,
-      235 * s,
+      difficultyY,
       'AI難易度',
       () => DIFFICULTY_LABEL[DIFFICULTY_ORDER[this.autoMatchSettings.difficultyIndex]],
       {
@@ -239,9 +286,10 @@ export class OnlineLobbyScene extends Phaser.Scene {
       }
     );
 
+    const timeLimitY = difficultyY + rowGap;
     const timeLimitRow = this._createStepperRow(
       centerX,
-      280 * s,
+      timeLimitY,
       '制限時間',
       () =>
         TIME_LIMIT_OPTIONS_SEC[this.autoMatchSettings.timeLimitIndex] === null
@@ -257,8 +305,10 @@ export class OnlineLobbyScene extends Phaser.Scene {
       }
     );
 
-    const searchBtn = this._createButton(centerX, 340 * s, '検索開始', () => this._startAutoMatch());
-    const backBtn = this._createButton(centerX, 390 * s, '戻る', () => this._showAutoMatchEntry());
+    const searchBtnY = timeLimitY + rowGap + 15 * s;
+    const backBtnY = searchBtnY + 50 * s;
+    const searchBtn = this._createButton(centerX, searchBtnY, '検索開始', () => this._startAutoMatch());
+    const backBtn = this._createButton(centerX, backBtnY, '戻る', () => this._showAutoMatchEntry());
 
     this.bodyContainer.add([
       hintLabel,

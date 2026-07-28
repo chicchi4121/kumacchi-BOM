@@ -70,11 +70,16 @@ export class LobbyScene extends Phaser.Scene {
       .text(centerX, 50 * s, '対戦設定', { fontSize: scaledFontPx(28, s), color: '#ffffff' })
       .setOrigin(0.5);
 
+    // 「参加人数を選ぶ項目の文字が大きすぎて見えなくなっている」への対応:
+    // 従来は値の表示に"4人 (人間1/AI3)"のような長い文字列を使っており、
+    // +/-ボタンの間の限られた幅に収まらず文字がボタンと重なって読めなく
+    // なっていた。値表示は短い"4人"のみにし、人間/AIの内訳は次の行
+    // (人間プレイヤー数)側の表示から読み取れるようにする。
     const participantRow = this._createStepperRow(
       centerX,
       120 * s,
       '参加人数',
-      () => `${this.settings.participantCount}人 (人間${this.settings.humanCount}/AI${this.settings.participantCount - this.settings.humanCount})`,
+      () => `${this.settings.participantCount}人`,
       {
         onDecrease: () => {
           this.settings.participantCount = Math.max(2, this.settings.participantCount - 1);

@@ -4,14 +4,19 @@
  * BGM・効果音の再生を担当するシステム。
  *
  * 開発ルール9「描画・物理・AI・UI・サウンド・データ管理を完全に分離する
- * こと」に基づき、Phaserには依存せずWeb Audio APIのみで完結させている。
- * これにより、assets/audio/配下にSuno制作のBGMや効果音ファイルが
- * 用意でき次第、SE_DEFINITIONS/BGM_DEFINITIONSの中身を
- * 「オシレーター合成」から「音声ファイル再生」に差し替えるだけで
- * 移行できる（呼び出し側のplaySE()/playBGM()のAPIは変更不要）。
+ * こと」に基づき、Phaserには依存せずWeb Audio API/HTMLAudioElementのみで
+ * 完結させている。
  *
- * 現時点(Phase2)では音源ファイルが無いため、オシレーターによる
- * 簡易な合成音をプレースホルダーとして使用する。
+ * 効果音(SE)は、実音源が用意されるまでのプレースホルダーとして
+ * オシレーター合成のままにしている(SE_DEFINITIONS参照)。
+ *
+ * BGMは、ユーザーから提供された実音源ファイル(assets/audio/bgm/配下)を
+ * <audio>要素で再生する方式に切り替えた(以前はオシレーターによる簡易な
+ * 合成音のループだった)。
+ * ・タイトル画面: assets/audio/bgm/opening.mp3を1曲固定で再生。
+ * ・対戦画面: 「対戦毎にランダムで流れるようにしてほしい」という要望に
+ *   対応し、assets/audio/bgm/battle1〜5.mp3の中から対戦開始のたびに
+ *   ランダムに1曲選んで再生する(BGM_FILES/playBGM参照)。
  * ------------------------------------------------------------
  */
 import { Save } from '../utils/Save.js';
@@ -47,21 +52,18 @@ const SE_DEFINITIONS = Object.freeze({
   countdown_go: [{ freq: 990, duration: 0.28, type: 'square', gain: 0.35 }],
 });
 
-// BGM定義: 明るくコミカルな雰囲気のシンプルな音階ループ（プレースホルダー）
-const BGM_DEFINITIONS = Object.freeze({
-  title: [
-    { freq: 523.25, duration: 0.28 },
-    { freq: 659.25, duration: 0.28 },
-    { freq: 783.99, duration: 0.28 },
-    { freq: 659.25, duration: 0.28 },
-  ],
+// BGM定義: キーごとに再生候補となる音源ファイルのパスの配列。
+// 「対戦毎にランダムで流れるようにしてほしい」への対応で、gameキーには
+// 複数のファイルを列挙しておき、playBGM()呼び出しのたびにこの中から
+// ランダムに1つを選んで再生する(titleは1曲のみなので常に同じ曲になる)。
+const BGM_FILES = Object.freeze({
+  title: ['assets/audio/bgm/opening.mp3'],
   game: [
-    { freq: 587.33, duration: 0.22 },
-    { freq: 698.46, duration: 0.22 },
-    { freq: 880.0, duration: 0.22 },
-    { freq: 698.46, duration: 0.22 },
-    { freq: 587.33, duration: 0.22 },
-    { freq: 493.88, duration: 0.22 },
+    'assets/audio/bgm/battle1.mp3',
+    'assets/audio/bgm/battle2.mp3',
+    'assets/audio/bgm/battle3.mp3',
+    'assets/audio/bgm/battle4.mp3',
+    'assets/audio/bgm/battle5.mp3',
   ],
 });
 
@@ -70,8 +72,8 @@ export class SoundSystem {
     this.ctx = null;
     this.masterSeGain = null;
     this.masterBgmGain = null;
-    this.bgmTimer = null;
     this.currentBgmKey = null;
+    this._bgmAudio = null; // BGM再生用の<audio>要素(SEはWeb Audio、BGMはHTMLAudioElementと再生経路が別)
 
     const savedVolume = Save.getVolume();
     this.bgmVolume = savedVolume.bgm ?? 0.8;
@@ -104,6 +106,7 @@ export class SoundSystem {
     if (type === 'bgm') {
       this.bgmVolume = clamped;
       if (this.masterBgmGain) this.masterBgmGain.gain.value = clamped;
+      if (this._bgmAudio) this._bgmAudio.volume = clamped;
     } else {
       this.seVolume = clamped;
       if (this.masterSeGain) this.masterSeGain.gain.value = clamped;
@@ -149,32 +152,41 @@ export class SoundSystem {
     osc.stop(start + duration + 0.02);
   }
 
-  /** @param {'title'|'game'} key */
+  /**
+   * BGMを再生する。
+   * @param {'title'|'game'} key
+   *
+   * 「ファイルのオープニング.mp3をオープニング画面のBGMにしてほしい。
+   * バトルBGM.zipを対戦毎にランダムで流れるようにしてほしい」への対応。
+   * titleは1曲のみ(常に同じファイル)、gameはBGM_FILES.gameの中から
+   * 呼び出されるたびに毎回ランダムに1曲選び直す(同じ曲が続けて選ばれる
+   * こともある単純なランダム選択。「前回と同じ曲は避ける」といった重み
+   * 付けは行っていない)。
+   */
   playBGM(key) {
-    this._ensureContext();
-    if (!this.ctx || this.currentBgmKey === key) return;
+    const files = BGM_FILES[key];
+    if (!files || files.length === 0) return;
+    if (typeof Audio === 'undefined') return; // Node上のテスト等、<audio>非対応環境では何もしない
     this.stopBGM();
 
-    const sequence = BGM_DEFINITIONS[key];
-    if (!sequence) return;
-
+    const file = files[Math.floor(Math.random() * files.length)];
     this.currentBgmKey = key;
-    let index = 0;
-    const step = () => {
-      if (this.currentBgmKey !== key) return; // 停止済み or 別BGMに切り替え済み
-      const note = sequence[index % sequence.length];
-      this._playTone({ ...note, type: note.type ?? 'triangle', gain: 0.14 }, this.masterBgmGain);
-      index++;
-      this.bgmTimer = window.setTimeout(step, note.duration * 1000);
-    };
-    step();
+    this._bgmAudio = new Audio(file);
+    this._bgmAudio.loop = true;
+    this._bgmAudio.volume = this.bgmVolume;
+    this._bgmAudio.play().catch((e) => {
+      // ブラウザの自動再生制限(ユーザー操作前は再生できない等)で失敗する
+      // ことがあるが、ゲーム進行自体は継続できるよう握りつぶす。
+      console.warn('[SoundSystem] BGMの再生に失敗しました。', e);
+    });
   }
 
   stopBGM() {
     this.currentBgmKey = null;
-    if (this.bgmTimer) {
-      window.clearTimeout(this.bgmTimer);
-      this.bgmTimer = null;
+    if (this._bgmAudio) {
+      this._bgmAudio.pause();
+      this._bgmAudio.currentTime = 0;
+      this._bgmAudio = null;
     }
   }
 }
