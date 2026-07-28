@@ -40,6 +40,7 @@ import {
   NETWORK_INIT_REQUEST_RETRY_MS,
 } from '../constants/GameConstants.js';
 import { computeBattleLayout } from '../utils/ViewportLayout.js';
+import { computeTouchControlLayout, isTouchCapable } from '../utils/TouchControlLayout.js';
 import { CubeStage } from '../objects/CubeStage.js';
 import { Player } from '../objects/Player.js';
 import { Bomb } from '../objects/Bomb.js';
@@ -153,6 +154,7 @@ export class GameScene extends Phaser.Scene {
     this._createHud();
     this._buildPlayerCards();
     this._createInput();
+    this._createTouchControls();
 
     this.events.once('shutdown', () => {
       this._sceneActive = false;
@@ -265,6 +267,7 @@ export class GameScene extends Phaser.Scene {
 
     this._createHud();
     this._createGuestInput();
+    this._createTouchControls();
 
     this._guestStatusText = this.add
       .text(this._layout.stageWidth / 2, this._layout.totalHeight / 2, 'ホストの対戦情報を受信中...', {
@@ -325,12 +328,17 @@ export class GameScene extends Phaser.Scene {
     if (time - (this._lastMoveSendAt ?? 0) < NETWORK_INPUT_SEND_INTERVAL_MS) return;
     this._lastMoveSendAt = time;
     const keys = this._guestKeys;
+    // 「スマホでもプレイできるように」への対応: タッチ操作(仮想十字キー、
+    // this._touchMoveState)が押されている場合も、キーボードと同じ移動
+    // 入力として扱う(OR条件)。タッチ非対応デバイスではthis._touchMoveState
+    // は常にすべてfalseなので、キーボードのみの従来動作と変わらない。
+    const touch = this._touchMoveState;
     this.config.online.network.send(
       buildMoveInputMessage(this.myPlayerId, {
-        up: keys.up.isDown,
-        down: keys.down.isDown,
-        left: keys.left.isDown,
-        right: keys.right.isDown,
+        up: keys.up.isDown || !!touch?.up,
+        down: keys.down.isDown || !!touch?.down,
+        left: keys.left.isDown || !!touch?.left,
+        right: keys.right.isDown || !!touch?.right,
       })
     );
   }
@@ -733,6 +741,15 @@ export class GameScene extends Phaser.Scene {
     if (this.countdownText) {
       this.countdownText.setPosition(this._layout.stageWidth / 2, this._layout.totalHeight / 2);
     }
+    if (this._touchControls) {
+      const layout = computeTouchControlLayout(this._layout.stageWidth, this._layout.totalHeight);
+      this._touchControls.upBtn.setPosition(layout.up.x, layout.up.y);
+      this._touchControls.downBtn.setPosition(layout.down.x, layout.down.y);
+      this._touchControls.leftBtn.setPosition(layout.left.x, layout.left.y);
+      this._touchControls.rightBtn.setPosition(layout.right.x, layout.right.y);
+      this._touchControls.bombBtn.setPosition(layout.bomb.x, layout.bomb.y);
+      this._touchControls.pauseBtn.setPosition(layout.pause.x, layout.pause.y);
+    }
   }
 
   /**
@@ -749,43 +766,83 @@ export class GameScene extends Phaser.Scene {
     }
     this._playerCards.clear();
 
-    const cardHeight = 96;
+    // 「スマホでもプレイできるように」への対応: 狭い画面(this._layout.
+    // compactPanel)では、アイコン+名前を横並びにする従来レイアウトだと
+    // パネル幅(MIN_HUD_PANEL_WIDTH程度)に収まらないため、アイコンを
+    // 縦方向中心に配置し名前・ステータスをその下に積む縦積みレイアウトに
+    // 切り替える(_createPlayerCard参照)。カードの高さもそれに合わせて
+    // 縮める。
+    const compact = !!this._layout.compactPanel;
+    const cardHeight = compact ? 78 : 96;
     const startY = 44;
     this.players.forEach((player, index) => {
-      const card = this._createPlayerCard(player, startY + index * cardHeight, cardHeight);
+      const card = this._createPlayerCard(player, startY + index * cardHeight, cardHeight, compact);
       this._panelContainer.add(card.elements);
       this._playerCards.set(player.playerId, card);
     });
     this._updateHud();
   }
 
-  /** 1人分のプレイヤーカード(アイコン+名前+ステータステキスト)を作る。画像アイコンは後からVRM読込完了時に差し替わる(_setPlayerCardIcon参照) */
-  _createPlayerCard(player, y, height) {
+  /**
+   * 1人分のプレイヤーカード(アイコン+名前+ステータステキスト)を作る。
+   * 画像アイコンは後からVRM読込完了時に差し替わる(_setPlayerCardIcon参照)。
+   * @param {boolean} compact - 狭いパネル向けの縦積みレイアウトにするか
+   */
+  _createPlayerCard(player, y, height, compact = false) {
     const panelWidth = this._layout.panelWidth;
-    const iconSize = 56;
-    const iconX = 14;
-    const iconCenterX = iconX + iconSize / 2;
-    const iconCenterY = y + 8 + iconSize / 2;
-
     const colorName = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
-    const iconBg = this.add.circle(iconCenterX, iconCenterY, iconSize / 2, PLAYER_COLOR_HEX[colorName] ?? 0x888888);
-    iconBg.setStrokeStyle(2, 0xffffff, 0.7);
+    const fillColor = PLAYER_COLOR_HEX[colorName] ?? 0x888888;
 
-    const nameText = this.add
-      .text(iconX + iconSize + 10, y + 4, this._playerCardLabel(player), {
-        fontSize: '13px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0, 0);
-    const statusText = this.add
-      .text(iconX + iconSize + 10, y + 24, '', {
-        fontSize: '12px',
-        color: '#dddddd',
-        lineSpacing: 3,
-      })
-      .setOrigin(0, 0);
-    const divider = this.add.rectangle(panelWidth / 2, y + height - 4, panelWidth - 20, 1, 0xffffff, 0.15);
+    let iconSize;
+    let iconCenterX;
+    let iconCenterY;
+    let nameText;
+    let statusText;
+
+    if (compact) {
+      iconSize = 32;
+      iconCenterX = panelWidth / 2;
+      iconCenterY = y + 6 + iconSize / 2;
+      nameText = this.add
+        .text(panelWidth / 2, iconCenterY + iconSize / 2 + 3, this._playerCardLabel(player), {
+          fontSize: '10px',
+          color: '#ffffff',
+          fontStyle: 'bold',
+          align: 'center',
+        })
+        .setOrigin(0.5, 0);
+      statusText = this.add
+        .text(panelWidth / 2, iconCenterY + iconSize / 2 + 15, '', {
+          fontSize: '9px',
+          color: '#dddddd',
+          align: 'center',
+          lineSpacing: 2,
+        })
+        .setOrigin(0.5, 0);
+    } else {
+      iconSize = 56;
+      const iconX = 14;
+      iconCenterX = iconX + iconSize / 2;
+      iconCenterY = y + 8 + iconSize / 2;
+      nameText = this.add
+        .text(iconX + iconSize + 10, y + 4, this._playerCardLabel(player), {
+          fontSize: '13px',
+          color: '#ffffff',
+          fontStyle: 'bold',
+        })
+        .setOrigin(0, 0);
+      statusText = this.add
+        .text(iconX + iconSize + 10, y + 24, '', {
+          fontSize: '12px',
+          color: '#dddddd',
+          lineSpacing: 3,
+        })
+        .setOrigin(0, 0);
+    }
+
+    const iconBg = this.add.circle(iconCenterX, iconCenterY, iconSize / 2, fillColor);
+    iconBg.setStrokeStyle(2, 0xffffff, 0.7);
+    const divider = this.add.rectangle(panelWidth / 2, y + height - 4, Math.max(0, panelWidth - 20), 1, 0xffffff, 0.15);
 
     return {
       player,
@@ -870,6 +927,125 @@ export class GameScene extends Phaser.Scene {
       });
       return { player, keys };
     });
+  }
+
+  /**
+   * このブラウザ/デバイスがタッチ操作に対応しているかどうか。
+   * window/navigatorが存在しない環境(Node上のテスト等)では常にfalseを
+   * 返す(TouchControlLayout.isTouchCapable参照)。
+   */
+  _isTouchCapable() {
+    const win = typeof window !== 'undefined' ? window : null;
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    return isTouchCapable(win, nav);
+  }
+
+  /**
+   * 「スマホでもプレイできるようにしてほしい」への対応。
+   * 従来この対戦画面は矢印キー+Space(キーボード)専用の操作しか無く、
+   * タッチ操作の手段が一切無かったため、スマホでは事実上プレイ不可能
+   * だった。タッチ対応デバイス(_isTouchCapable)でのみ、画面左下に
+   * 十字キー風の4方向ボタン、右下に爆弾設置ボタン、右上に一時停止
+   * ボタンを半透明のオーバーレイとして表示し、指のタッチ操作で
+   * キーボードと同じ移動・爆弾設置ができるようにする。
+   *
+   * 4方向ボタンの押下状態はthis._touchMoveStateに保持し、
+   * _handleMovementInput()(ローカル/ホスト側)・_sendGuestMoveInputIfDue()
+   * (ゲスト側)の両方で、既存のキーボード入力状態とOR条件で合わせて
+   * 判定する(どちらか一方が押されていれば移動する)。this._touchMoveState
+   * 自体はタッチ非対応デバイスでも常に(すべてfalseで)用意しておくことで、
+   * 参照側で毎回タッチ対応かどうかを気にしなくて済むようにしてある。
+   */
+  _createTouchControls() {
+    this._touchMoveState = { up: false, down: false, left: false, right: false };
+    this._touchControls = null;
+    if (!this._isTouchCapable()) return;
+
+    const layout = computeTouchControlLayout(this._layout.stageWidth, this._layout.totalHeight);
+
+    const makeDirButton = (pos, label, dir) => {
+      const btn = this.add
+        .text(pos.x, pos.y, label, {
+          fontSize: '26px',
+          color: '#ffffff',
+          backgroundColor: '#3a3a3a',
+          padding: { x: 14, y: 10 },
+        })
+        .setOrigin(0.5)
+        .setAlpha(0.6)
+        .setDepth(DEPTH.UI)
+        .setInteractive({ useHandCursor: true });
+      const press = () => {
+        this._touchMoveState[dir] = true;
+        btn.setAlpha(0.9);
+      };
+      const release = () => {
+        this._touchMoveState[dir] = false;
+        btn.setAlpha(0.6);
+      };
+      btn.on('pointerdown', press);
+      btn.on('pointerup', release);
+      btn.on('pointerout', release);
+      return btn;
+    };
+
+    const upBtn = makeDirButton(layout.up, '▲', 'up');
+    const downBtn = makeDirButton(layout.down, '▼', 'down');
+    const leftBtn = makeDirButton(layout.left, '◀', 'left');
+    const rightBtn = makeDirButton(layout.right, '▶', 'right');
+
+    const bombBtn = this.add
+      .text(layout.bomb.x, layout.bomb.y, '💣', {
+        fontSize: '30px',
+        backgroundColor: '#5a2a2a',
+        padding: { x: 16, y: 12 },
+      })
+      .setOrigin(0.5)
+      .setAlpha(0.65)
+      .setDepth(DEPTH.UI)
+      .setInteractive({ useHandCursor: true });
+    const bombRelease = () => bombBtn.setAlpha(0.65);
+    bombBtn.on('pointerdown', () => {
+      bombBtn.setAlpha(0.95);
+      this._handleTouchBombPress();
+    });
+    bombBtn.on('pointerup', bombRelease);
+    bombBtn.on('pointerout', bombRelease);
+
+    const pauseBtn = this.add
+      .text(layout.pause.x, layout.pause.y, '⏸', {
+        fontSize: '20px',
+        color: '#ffffff',
+        backgroundColor: '#3a3a3a',
+        padding: { x: 8, y: 4 },
+      })
+      .setOrigin(0.5)
+      .setAlpha(0.7)
+      .setDepth(DEPTH.UI)
+      .setInteractive({ useHandCursor: true });
+    pauseBtn.on('pointerdown', () => {
+      if (!this.countdownActive) this._pauseGame();
+    });
+
+    this._touchControls = { upBtn, downBtn, leftBtn, rightBtn, bombBtn, pauseBtn };
+  }
+
+  /**
+   * タッチ操作の爆弾ボタンが押された時の処理。ローカル(ホスト自身を含む)
+   * では最初の人間プレイヤー(_humanInputs[0]、タッチ操作の対象は常に
+   * この1人分のみとする)に対して直接_tryPlaceBombを呼び、オンライン
+   * 対戦のゲストではキーボードのSpaceキーと同じくホストへbomb入力
+   * メッセージを送信するだけにする(ゲストはホスト権威型で描画専用のため)。
+   */
+  _handleTouchBombPress() {
+    if (this.countdownActive) return;
+    if (this.config.mode === 'online' && this.config.online?.role === 'guest') {
+      if (!this.myPlayerId) return;
+      this.config.online.network.send(buildBombInputMessage(this.myPlayerId));
+      return;
+    }
+    const player = this._humanInputs?.[0]?.player;
+    if (player) this._tryPlaceBomb(player);
   }
 
   /** 試合開始前の「3・2・1・START」カウントダウン演出。終了までプレイヤー/AIの行動を止める */
@@ -1249,18 +1425,25 @@ export class GameScene extends Phaser.Scene {
    * (_networkMoveStates、_onHostNetworkMessage参照)を参照する。
    */
   _handleMovementInput() {
-    for (const { player, keys } of this._humanInputs ?? []) {
-      if (!player.isAlive) continue;
-      if (keys.up.isDown) {
+    this._humanInputs?.forEach(({ player, keys }, index) => {
+      if (!player.isAlive) return;
+      // 「スマホでもプレイできるように」への対応: タッチ操作(仮想十字キー)
+      // は常に最初の人間プレイヤー(index===0)だけを操作対象とする
+      // (ローカルPVPで複数人が同じ端末を触る場合でも、タッチはこの1人分
+      // のみ。2人目以降は従来通りキーボードのみ)。this._touchMoveStateは
+      // タッチ非対応デバイスでは常にすべてfalseなので、キーボードのみの
+      // 従来動作と変わらない。
+      const touch = index === 0 ? this._touchMoveState : null;
+      if (keys.up.isDown || touch?.up) {
         this._moveOrKick(player, 'up');
-      } else if (keys.down.isDown) {
+      } else if (keys.down.isDown || touch?.down) {
         this._moveOrKick(player, 'down');
-      } else if (keys.left.isDown) {
+      } else if (keys.left.isDown || touch?.left) {
         this._moveOrKick(player, 'left');
-      } else if (keys.right.isDown) {
+      } else if (keys.right.isDown || touch?.right) {
         this._moveOrKick(player, 'right');
       }
-    }
+    });
 
     if (this._networkMoveStates) {
       for (const [playerId, keysState] of this._networkMoveStates) {

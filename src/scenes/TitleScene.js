@@ -22,6 +22,7 @@ import { SCENE_KEYS } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { vrmSystem } from '../systems/VRMSystem.js';
 import { Save } from '../utils/Save.js';
+import { computeUIScale, scaledFontPx } from '../utils/ResponsiveUI.js';
 
 const VRM_FILE_INPUT_ID = 'kumacchi-vrm-file-input';
 
@@ -36,48 +37,53 @@ export class TitleScene extends Phaser.Scene {
     // 実サイズ(this.scale.width/height)を基準に中央揃えする。
     const centerX = this.scale.width / 2;
     soundSystem.playBGM('title');
+    // 「スマホでもプレイできるように」への対応: 画面の実サイズから縮小率を
+    // 算出し、以降のy座標・フォントサイズに一律で乗算する
+    // (ResponsiveUI.computeUIScale参照)。
+    this._uiScale = computeUIScale(this.scale.width, this.scale.height);
+    const s = this._uiScale;
 
     this.add
-      .text(centerX, 70, 'くまっちボム！', { fontSize: '40px', color: '#ffffff' })
+      .text(centerX, 70 * s, 'くまっちボム！', { fontSize: scaledFontPx(40, s), color: '#ffffff' })
       .setOrigin(0.5);
 
-    this._createMenuButton(centerX, 155, 'ゲーム開始', () => {
+    this._createMenuButton(centerX, 155 * s, 'ゲーム開始', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.LOBBY);
     });
 
-    this._createMenuButton(centerX, 210, 'オンライン対戦', () => {
+    this._createMenuButton(centerX, 210 * s, 'オンライン対戦', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.ONLINE_LOBBY);
     });
 
-    this._createMenuButton(centerX, 265, 'ランキング', () => {
+    this._createMenuButton(centerX, 265 * s, 'ランキング', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.RANKING);
     });
 
-    this._createMenuButton(centerX, 320, '設定', () => {
+    this._createMenuButton(centerX, 320 * s, '設定', () => {
       soundSystem.playSE('button');
       this._toggleSettingsPanel();
     });
 
-    this._createMenuButton(centerX, 375, 'VRM変更', () => {
+    this._createMenuButton(centerX, 375 * s, 'VRM変更', () => {
       soundSystem.playSE('button');
       this._openVrmFilePicker();
     });
 
     this.vrmStatusText = this.add
-      .text(centerX, 408, this._getVrmStatusLabel(), { fontSize: '13px', color: '#88ddaa' })
+      .text(centerX, 408 * s, this._getVrmStatusLabel(), { fontSize: scaledFontPx(13, s), color: '#88ddaa' })
       .setOrigin(0.5);
 
     this.add
-      .text(centerX, this.scale.height - 30, '操作: ↑↓←→ 移動 / Space 爆弾設置 / Esc ポーズ', {
-        fontSize: '14px',
+      .text(centerX, this.scale.height - 30 * s, '操作: ↑↓←→/仮想十字キー 移動 / Space/💣ボタン 爆弾設置 / Esc/⏸ ポーズ', {
+        fontSize: scaledFontPx(14, s),
         color: '#aaaaaa',
       })
       .setOrigin(0.5);
 
-    this._createSettingsPanel(centerX, 440);
+    this._createSettingsPanel(centerX, 440 * s);
   }
 
   _getVrmStatusLabel() {
@@ -122,12 +128,13 @@ export class TitleScene extends Phaser.Scene {
   }
 
   _createMenuButton(x, y, label, onClick, disabled = false) {
+    const s = this._uiScale ?? 1;
     const text = this.add
       .text(x, y, label, {
-        fontSize: '22px',
+        fontSize: scaledFontPx(22, s),
         color: disabled ? '#666666' : '#ffffff',
         backgroundColor: disabled ? '#222222' : '#3a3a3a',
-        padding: { x: 16, y: 8 },
+        padding: { x: Math.round(16 * s), y: Math.round(8 * s) },
       })
       .setOrigin(0.5);
 
@@ -140,17 +147,22 @@ export class TitleScene extends Phaser.Scene {
     return text;
   }
 
-  /** BGM/SE音量調整・プレイヤー名設定を行う簡易設定パネル（Save.js経由で永続化） */
+  /**
+   * BGM/SE音量調整・プレイヤー名設定を行う簡易設定パネル（Save.js経由で永続化）。
+   * 「スマホでもプレイできるように」への対応: パネル幅・内部の行オフセット
+   * にもthis._uiScaleを適用し、狭い画面でパネルが画面外にはみ出さないようにする。
+   */
   _createSettingsPanel(x, y) {
     const { bgm, se } = soundSystem.getVolume();
+    const s = this._uiScale ?? 1;
 
     this.settingsContainer = this.add.container(x, y);
     this.settingsContainer.setVisible(false);
 
-    const bg = this.add.rectangle(0, 55, 360, 150, 0x000000, 0.55);
+    const bg = this.add.rectangle(0, 55 * s, 360 * s, 150 * s, 0x000000, 0.55);
     this.bgmRow = this._createVolumeRow(0, 0, 'BGM音量', bgm, (v) => soundSystem.setVolume('bgm', v));
-    this.seRow = this._createVolumeRow(0, 45, 'SE音量', se, (v) => soundSystem.setVolume('se', v));
-    this.nameRow = this._createPlayerNameRow(0, 95);
+    this.seRow = this._createVolumeRow(0, 45 * s, 'SE音量', se, (v) => soundSystem.setVolume('se', v));
+    this.nameRow = this._createPlayerNameRow(0, 95 * s);
 
     this.settingsContainer.add([bg, this.bgmRow.container, this.seRow.container, this.nameRow.container]);
   }
@@ -161,13 +173,14 @@ export class TitleScene extends Phaser.Scene {
    * 簡易的に入力してもらう(Save.getPlayerName/setPlayerName経由で永続化)。
    */
   _createPlayerNameRow(x, y) {
+    const s = this._uiScale ?? 1;
     const container = this.add.container(x, y);
-    const labelText = this.add.text(-170, 0, 'ランキング表示名', { fontSize: '16px', color: '#ffffff' }).setOrigin(0, 0.5);
+    const labelText = this.add.text(-170 * s, 0, 'ランキング表示名', { fontSize: scaledFontPx(16, s), color: '#ffffff' }).setOrigin(0, 0.5);
     const valueText = this.add
-      .text(60, 0, Save.getPlayerName(), { fontSize: '16px', color: '#ffe066' })
+      .text(60 * s, 0, Save.getPlayerName(), { fontSize: scaledFontPx(16, s), color: '#ffe066' })
       .setOrigin(0.5);
     const editBtn = this.add
-      .text(150, 0, '変更', { fontSize: '16px', color: '#ffffff', backgroundColor: '#3a3a3a', padding: { x: 10, y: 2 } })
+      .text(150 * s, 0, '変更', { fontSize: scaledFontPx(16, s), color: '#ffffff', backgroundColor: '#3a3a3a', padding: { x: 10, y: 2 } })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
     editBtn.on('pointerdown', () => {
@@ -184,20 +197,21 @@ export class TitleScene extends Phaser.Scene {
   }
 
   _createVolumeRow(x, y, label, initialValue, onChange) {
+    const s = this._uiScale ?? 1;
     const container = this.add.container(x, y);
     let value = initialValue;
 
-    const labelText = this.add.text(-170, 0, label, { fontSize: '16px', color: '#ffffff' }).setOrigin(0, 0.5);
+    const labelText = this.add.text(-170 * s, 0, label, { fontSize: scaledFontPx(16, s), color: '#ffffff' }).setOrigin(0, 0.5);
     const valueText = this.add
-      .text(80, 0, `${Math.round(value * 100)}%`, { fontSize: '16px', color: '#ffe066' })
+      .text(80 * s, 0, `${Math.round(value * 100)}%`, { fontSize: scaledFontPx(16, s), color: '#ffe066' })
       .setOrigin(0.5);
 
-    const minusBtn = this._createStepperButton(30, 0, '-', () => {
+    const minusBtn = this._createStepperButton(30 * s, 0, '-', () => {
       value = Math.max(0, Math.round((value - 0.1) * 10) / 10);
       valueText.setText(`${Math.round(value * 100)}%`);
       onChange(value);
     });
-    const plusBtn = this._createStepperButton(130, 0, '+', () => {
+    const plusBtn = this._createStepperButton(130 * s, 0, '+', () => {
       value = Math.min(1, Math.round((value + 0.1) * 10) / 10);
       valueText.setText(`${Math.round(value * 100)}%`);
       onChange(value);
@@ -208,9 +222,10 @@ export class TitleScene extends Phaser.Scene {
   }
 
   _createStepperButton(x, y, label, onClick) {
+    const s = this._uiScale ?? 1;
     const btn = this.add
       .text(x, y, label, {
-        fontSize: '18px',
+        fontSize: scaledFontPx(18, s),
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
         padding: { x: 10, y: 2 },

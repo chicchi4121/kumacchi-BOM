@@ -31,6 +31,15 @@ export const SCREEN_HEIGHT = TILE_SIZE * GRID_ROWS + 64; // 下部UI分の余白
 // 狭いウィンドウでもステージが極端に潰れないようにする下限。
 export const HUD_PANEL_WIDTH = 260;
 export const STAGE_VIEWPORT_MIN_WIDTH = 480;
+// 「スマホでもプレイできるように」への対応: スマホ(特に縦持ち、幅400px
+// 前後)ではSTAGE_VIEWPORT_MIN_WIDTHを優先する従来の計算式のままだと
+// 右側パネルの幅が0になり、プレイヤー情報が一切表示されなくなって
+// しまう。MIN_HUD_PANEL_WIDTHは、画面がどれだけ狭くても右側パネルに
+// 必ず確保する最低幅(ViewportLayout.computeBattleLayout参照)。この幅を
+// 下回る場合はコンパクト表示(アイコン+簡易ステータスのみ)に切り替える
+// 閾値としてCOMPACT_HUD_PANEL_THRESHOLDも合わせて定義する。
+export const MIN_HUD_PANEL_WIDTH = 96;
+export const COMPACT_HUD_PANEL_THRESHOLD = 150;
 
 // --- パフォーマンス目標 -----------------------------------------
 export const TARGET_FPS = 60;

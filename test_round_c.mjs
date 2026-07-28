@@ -49,6 +49,7 @@ const {
   ITEM_TYPES,
   HUD_PANEL_WIDTH,
   STAGE_VIEWPORT_MIN_WIDTH,
+  MIN_HUD_PANEL_WIDTH,
   CUBE_FACE_NAMES,
 } = await import('./src/constants/GameConstants.js');
 const { Stage } = await import('./src/objects/Stage.js');
@@ -65,10 +66,31 @@ console.log('== 1. ViewportLayout.computeBattleLayout(画面上下をブラウ�
   check('パネルはステージの右側(panelX===stageWidth)に配置される', wide.panelX === wide.stageWidth);
   check('画面の高さはそのままブラウザの高さになる(letterboxしない)', wide.totalHeight === 900);
 
+  // 【2026-07追記】「スマホでもプレイできるように」への対応で、
+  // computeBattleLayoutの優先順位を一部変更した。従来は「ステージの
+  // 最低限の遊びやすさ(STAGE_VIEWPORT_MIN_WIDTH) > パネルの理想幅」
+  // だったが、この優先順位を無条件に適用すると、スマホ等の非常に狭い
+  // 画面(幅400px前後)ではパネル幅が実質0になり、プレイヤー情報が一切
+  // 表示されなくなってしまう不具合があった。そのため、パネル幅は画面が
+  // どれだけ狭くてもMIN_HUD_PANEL_WIDTH分だけは必ず確保するよう変更し、
+  // 非常に狭い画面ではステージ幅がSTAGE_VIEWPORT_MIN_WIDTHを下回ることを
+  // 許容するようにした(詳細はViewportLayout.computeBattleLayoutのコメント
+  // 参照)。以下のテストはこの新しい優先順位を検証する。
   const narrow = computeBattleLayout(500, 700);
-  check('狭い画面ではステージ幅がSTAGE_VIEWPORT_MIN_WIDTHを下回らない', narrow.stageWidth === STAGE_VIEWPORT_MIN_WIDTH);
+  check(
+    '幅500pxのようなやや狭い画面では、パネルの最低幅は確保しつつステージ幅がSTAGE_VIEWPORT_MIN_WIDTHを下回ることがある',
+    narrow.stageWidth < STAGE_VIEWPORT_MIN_WIDTH && narrow.stageWidth > 0
+  );
   check('狭い画面ではパネル幅がHUD_PANEL_WIDTHより狭くなる', narrow.panelWidth < HUD_PANEL_WIDTH);
   check('stageWidth+panelWidthは常にtotalWidthに一致する', narrow.stageWidth + narrow.panelWidth === narrow.totalWidth);
+
+  const phone = computeBattleLayout(390, 844); // スマホ縦持ちの典型的な幅
+  check('スマホの典型的な幅(390px)でもパネル幅が0にならず、最低限プレイヤー情報を表示できる', phone.panelWidth >= MIN_HUD_PANEL_WIDTH);
+  check('スマホの典型的な幅(390px)ではコンパクトパネル表示に切り替わる', phone.compactPanel === true);
+  check('スマホの典型的な幅(390px)でもステージ幅は0や負数にならない', phone.stageWidth > 0);
+
+  const wideCompact = computeBattleLayout(1600, 900);
+  check('十分広い画面ではコンパクトパネル表示にならない', wideCompact.compactPanel === false);
 
   const zero = computeBattleLayout(0, 0);
   check('0x0のような不正サイズでも例外を投げず安全な最小値を返す', zero.totalWidth >= 1 && zero.totalHeight >= 1);

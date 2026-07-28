@@ -42,6 +42,7 @@ import {
   buildAutoMatchFoundMessage,
 } from '../systems/NetworkProtocol.js';
 import { DIFFICULTY_ORDER, DIFFICULTY_LABEL, TIME_LIMIT_OPTIONS_SEC } from './LobbyScene.js';
+import { computeUIScale, scaledFontPx } from '../utils/ResponsiveUI.js';
 
 export class OnlineLobbyScene extends Phaser.Scene {
   constructor() {
@@ -71,8 +72,16 @@ export class OnlineLobbyScene extends Phaser.Scene {
   async create() {
     const centerX = this.scale.width / 2;
     this._sceneActive = true;
+    // 「スマホでもプレイできるように」への対応: スマホ(幅360〜430px前後)
+    // では、これまで固定ピクセルオフセット(centerX±220等)で配置していた
+    // ボタン・設定行のラベルや+/-ボタンが画面外に切れてしまっていた。
+    // 画面の実サイズから縮小率を算出し、以降のボタン・設定行の配置
+    // オフセット/フォントサイズに一律で乗算することで画面内に収める
+    // (ResponsiveUI.computeUIScale参照。デスクトップの標準的な画面
+    // サイズでは縮小率が1になり、従来の座標と完全に一致する)。
+    this._uiScale = computeUIScale(this.scale.width, this.scale.height);
 
-    this.add.text(centerX, 50, 'オンライン対戦', { fontSize: '28px', color: '#ffffff' }).setOrigin(0.5);
+    this.add.text(centerX, 50 * this._uiScale, 'オンライン対戦', { fontSize: scaledFontPx(28, this._uiScale), color: '#ffffff' }).setOrigin(0.5);
 
     this.bodyContainer = this.add.container(0, 0);
     this._showChecking();
@@ -97,8 +106,9 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
   _showChecking() {
     this._clearBody();
+    const s = this._uiScale ?? 1;
     const text = this.add
-      .text(this.scale.width / 2, 200, 'Supabaseの接続状況を確認中...', { fontSize: '16px', color: '#cccccc' })
+      .text(this.scale.width / 2, 200 * s, 'Supabaseの接続状況を確認中...', { fontSize: scaledFontPx(16, s), color: '#cccccc' })
       .setOrigin(0.5);
     this.bodyContainer.add(text);
   }
@@ -106,6 +116,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
   _showUnavailable() {
     this._clearBody();
     const centerX = this.scale.width / 2;
+    const s = this._uiScale ?? 1;
     const lines = [
       'Supabaseが設定されていないため、オンライン対戦は利用できません。',
       '',
@@ -114,20 +125,60 @@ export class OnlineLobbyScene extends Phaser.Scene {
       '(supabase/schema.sql をSQL Editorで実行する手順もREADME.mdを参照)',
     ];
     const text = this.add
-      .text(centerX, 200, lines.join('\n'), { fontSize: '15px', color: '#ffcc66', align: 'center' })
+      .text(centerX, 200 * s, lines.join('\n'), { fontSize: scaledFontPx(15, s), color: '#ffcc66', align: 'center' })
       .setOrigin(0.5);
-    const backText = this._createButton(centerX, 340, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
+    const backText = this._createButton(centerX, 340 * s, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
     this.bodyContainer.add([text, backText]);
   }
 
   _showModeSelect() {
     this._clearBody();
     const centerX = this.scale.width / 2;
-    const autoMatchBtn = this._createButton(centerX, 160, 'オートマッチング(自動で対戦相手を探す)', () => this._showAutoMatchSettings());
-    const createBtn = this._createButton(centerX, 225, '部屋を作る(ホスト)', () => this._createRoom());
-    const joinBtn = this._createButton(centerX, 290, '部屋に参加する(コード入力)', () => this._promptJoinRoom());
-    const backBtn = this._createButton(centerX, 375, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
+    const s = this._uiScale ?? 1;
+    // 「オートマッチングで探してる相手に入る方の項目も作ってほしい」への
+    // 対応: 従来はオートマッチングのボタンを押すと必ず希望人数・難易度・
+    // 制限時間を選ぶ設定画面(条件を決めて探す側)に進んでいたが、既に
+    // 誰かが探している対戦にそのまま参加したいだけの人にとっては、この
+    // 設定画面は不要な手間になる。オートマッチング配下に「検索する」と
+    // 「参加する」を分けたサブメニュー(_showAutoMatchEntry)を用意した。
+    const autoMatchBtn = this._createButton(centerX, 160 * s, 'オートマッチング(自動で対戦相手を探す)', () => this._showAutoMatchEntry());
+    const createBtn = this._createButton(centerX, 225 * s, '部屋を作る(ホスト)', () => this._createRoom());
+    const joinBtn = this._createButton(centerX, 290 * s, '部屋に参加する(コード入力)', () => this._promptJoinRoom());
+    const backBtn = this._createButton(centerX, 375 * s, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
     this.bodyContainer.add([autoMatchBtn, createBtn, joinBtn, backBtn]);
+  }
+
+  /**
+   * オートマッチングのサブメニュー。「検索する(自分で希望人数・難易度・
+   * 制限時間を決めて対戦相手を探す側)」と「参加する(誰かが既に探している
+   * 対戦にそのまま入る側)」を分けて表示する。
+   *
+   * 実際の待合ロビー(_startAutoMatch以降)の仕組みは両者で全く同じ
+   * (固定の待合ロビーチャンネルへ参加するだけで、参加が一番早い人が
+   * 自動的にリーダー=対戦部屋の作成役になる)。「参加する」を選んだ人は
+   * 単に自分の希望条件を設定する手間を省いて即座に待合ロビーへ加わる
+   * だけで、そのまま既存の参加者と合流する(もし自分が結果的にリーダーに
+   * なった場合は、このシーンのデフォルト設定=this.autoMatchSettingsの
+   * 初期値がそのまま使われる)。
+   */
+  _showAutoMatchEntry() {
+    this._clearBody();
+    const centerX = this.scale.width / 2;
+    const s = this._uiScale ?? 1;
+    this.add.text(centerX, 110 * s, 'オートマッチング', { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0.5);
+    const hintLabel = this.add
+      .text(centerX, 145 * s, '自分で条件を決めて探すか、既に探している相手にそのまま参加するか選べます', {
+        fontSize: scaledFontPx(12, s),
+        color: '#aaaaaa',
+        align: 'center',
+      })
+      .setOrigin(0.5);
+
+    const searchBtn = this._createButton(centerX, 200 * s, '検索する(人数・難易度・制限時間を決めて探す)', () => this._showAutoMatchSettings());
+    const joinBtn = this._createButton(centerX, 260 * s, '参加する(今探している相手にそのまま入る)', () => this._startAutoMatch());
+    const backBtn = this._createButton(centerX, 320 * s, '戻る', () => this._showModeSelect());
+
+    this.bodyContainer.add([hintLabel, searchBtn, joinBtn, backBtn]);
   }
 
   // ---- オートマッチング -----------------------------------------------------
@@ -148,10 +199,11 @@ export class OnlineLobbyScene extends Phaser.Scene {
   _showAutoMatchSettings() {
     this._clearBody();
     const centerX = this.scale.width / 2;
-    this.add.text(centerX, 110, 'オートマッチング設定', { fontSize: '18px', color: '#ffffff' }).setOrigin(0.5);
+    const s = this._uiScale ?? 1;
+    this.add.text(centerX, 110 * s, 'オートマッチング設定', { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0.5);
     const hintLabel = this.add
-      .text(centerX, 138, 'ここで選んだ内容は、あなたが対戦部屋を作る役(先着順)になった場合に使われます', {
-        fontSize: '12px',
+      .text(centerX, 138 * s, 'ここで選んだ内容は、あなたが対戦部屋を作る役(先着順)になった場合に使われます', {
+        fontSize: scaledFontPx(12, s),
         color: '#aaaaaa',
         align: 'center',
       })
@@ -159,7 +211,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
     const participantRow = this._createStepperRow(
       centerX,
-      190,
+      190 * s,
       '希望人数',
       () => `${this.autoMatchSettings.participantCount}人(不足分はAIで補充)`,
       {
@@ -174,7 +226,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
     const difficultyRow = this._createStepperRow(
       centerX,
-      235,
+      235 * s,
       'AI難易度',
       () => DIFFICULTY_LABEL[DIFFICULTY_ORDER[this.autoMatchSettings.difficultyIndex]],
       {
@@ -189,7 +241,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
     const timeLimitRow = this._createStepperRow(
       centerX,
-      280,
+      280 * s,
       '制限時間',
       () =>
         TIME_LIMIT_OPTIONS_SEC[this.autoMatchSettings.timeLimitIndex] === null
@@ -205,8 +257,8 @@ export class OnlineLobbyScene extends Phaser.Scene {
       }
     );
 
-    const searchBtn = this._createButton(centerX, 340, '検索開始', () => this._startAutoMatch());
-    const backBtn = this._createButton(centerX, 390, '戻る', () => this._showModeSelect());
+    const searchBtn = this._createButton(centerX, 340 * s, '検索開始', () => this._startAutoMatch());
+    const backBtn = this._createButton(centerX, 390 * s, '戻る', () => this._showAutoMatchEntry());
 
     this.bodyContainer.add([
       hintLabel,
@@ -230,10 +282,11 @@ export class OnlineLobbyScene extends Phaser.Scene {
   async _startAutoMatch() {
     this._clearBody();
     const centerX = this.scale.width / 2;
+    const s = this._uiScale ?? 1;
     this._autoMatchStatusText = this.add
-      .text(centerX, 180, 'オートマッチング中...\n他のプレイヤーを探しています', { fontSize: '16px', color: '#cccccc', align: 'center' })
+      .text(centerX, 180 * s, 'オートマッチング中...\n他のプレイヤーを探しています', { fontSize: scaledFontPx(16, s), color: '#cccccc', align: 'center' })
       .setOrigin(0.5);
-    const cancelBtn = this._createButton(centerX, 260, 'キャンセル', () => this._cancelAutoMatch());
+    const cancelBtn = this._createButton(centerX, 260 * s, 'キャンセル', () => this._cancelAutoMatch());
     this.bodyContainer.add([this._autoMatchStatusText, cancelBtn]);
 
     this._autoMatchResolved = false;
@@ -406,7 +459,8 @@ export class OnlineLobbyScene extends Phaser.Scene {
   async _createRoom() {
     this._clearBody();
     const centerX = this.scale.width / 2;
-    const statusText = this.add.text(centerX, 150, '部屋を作成中...', { fontSize: '16px', color: '#cccccc' }).setOrigin(0.5);
+    const s = this._uiScale ?? 1;
+    const statusText = this.add.text(centerX, 150 * s, '部屋を作成中...', { fontSize: scaledFontPx(16, s), color: '#cccccc' }).setOrigin(0.5);
     this.bodyContainer.add(statusText);
 
     try {
@@ -424,21 +478,22 @@ export class OnlineLobbyScene extends Phaser.Scene {
   _showHostRoom(roomCode) {
     this._clearBody();
     const centerX = this.scale.width / 2;
+    const s = this._uiScale ?? 1;
 
     const codeLabel = this.add
-      .text(centerX, 110, `部屋コード: ${roomCode}`, { fontSize: '26px', color: '#ffe066' })
+      .text(centerX, 110 * s, `部屋コード: ${roomCode}`, { fontSize: scaledFontPx(26, s), color: '#ffe066' })
       .setOrigin(0.5);
     const hintLabel = this.add
-      .text(centerX, 145, 'このコードを対戦相手に伝えてください', { fontSize: '13px', color: '#aaaaaa' })
+      .text(centerX, 145 * s, 'このコードを対戦相手に伝えてください', { fontSize: scaledFontPx(13, s), color: '#aaaaaa' })
       .setOrigin(0.5);
 
     this.participantsText = this.add
-      .text(centerX, 190, '', { fontSize: '14px', color: '#ffffff', align: 'center' })
+      .text(centerX, 190 * s, '', { fontSize: scaledFontPx(14, s), color: '#ffffff', align: 'center' })
       .setOrigin(0.5, 0);
 
     const aiRow = this._createStepperRow(
       centerX,
-      270,
+      270 * s,
       'AI追加人数',
       () => `${this.settings.aiCount}人`,
       {
@@ -454,7 +509,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
     const difficultyRow = this._createStepperRow(
       centerX,
-      315,
+      315 * s,
       'AI難易度',
       () => DIFFICULTY_LABEL[DIFFICULTY_ORDER[this.settings.difficultyIndex]],
       {
@@ -469,7 +524,7 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
     const timeLimitRow = this._createStepperRow(
       centerX,
-      360,
+      360 * s,
       '制限時間',
       () =>
         TIME_LIMIT_OPTIONS_SEC[this.settings.timeLimitIndex] === null
@@ -485,8 +540,8 @@ export class OnlineLobbyScene extends Phaser.Scene {
       }
     );
 
-    const startBtn = this._createButton(centerX, 420, '対戦開始', () => this._startAsHost());
-    const backBtn = this._createButton(centerX, 470, 'やめる', () => this.scene.start(SCENE_KEYS.TITLE));
+    const startBtn = this._createButton(centerX, 420 * s, '対戦開始', () => this._startAsHost());
+    const backBtn = this._createButton(centerX, 470 * s, 'やめる', () => this.scene.start(SCENE_KEYS.TITLE));
 
     this.bodyContainer.add([
       codeLabel,
@@ -568,8 +623,9 @@ export class OnlineLobbyScene extends Phaser.Scene {
   async _joinRoom(roomCode) {
     this._clearBody();
     const centerX = this.scale.width / 2;
+    const s = this._uiScale ?? 1;
     const statusText = this.add
-      .text(centerX, 200, `部屋(${roomCode})に接続中...`, { fontSize: '16px', color: '#cccccc' })
+      .text(centerX, 200 * s, `部屋(${roomCode})に接続中...`, { fontSize: scaledFontPx(16, s), color: '#cccccc' })
       .setOrigin(0.5);
     this.bodyContainer.add(statusText);
 
@@ -582,12 +638,12 @@ export class OnlineLobbyScene extends Phaser.Scene {
       this._offGuestMessage = this.network.onMessage((msg) => {
         if (msg?.type === 'start_game') this._onHostStartedGame(msg);
       });
-      const backBtn = this._createButton(centerX, 300, 'やめる', () => this.scene.start(SCENE_KEYS.TITLE));
+      const backBtn = this._createButton(centerX, 300 * s, 'やめる', () => this.scene.start(SCENE_KEYS.TITLE));
       this.bodyContainer.add(backBtn);
     } catch (e) {
       console.error('[OnlineLobbyScene] 部屋への接続に失敗しました。', e);
       statusText.setText(`接続に失敗しました。部屋コードをご確認ください。\n(${e.message ?? e})`);
-      const backBtn = this._createButton(centerX, 300, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
+      const backBtn = this._createButton(centerX, 300 * s, 'タイトルに戻る', () => this.scene.start(SCENE_KEYS.TITLE));
       this.bodyContainer.add(backBtn);
     }
   }
@@ -609,12 +665,13 @@ export class OnlineLobbyScene extends Phaser.Scene {
   // ---- 共通UI部品 -----------------------------------------------------------
 
   _createButton(x, y, label, onClick) {
+    const s = this._uiScale ?? 1;
     const text = this.add
       .text(x, y, label, {
-        fontSize: '20px',
+        fontSize: scaledFontPx(20, s),
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
-        padding: { x: 16, y: 8 },
+        padding: { x: Math.round(16 * s), y: Math.round(8 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -627,16 +684,26 @@ export class OnlineLobbyScene extends Phaser.Scene {
     return text;
   }
 
+  /**
+   * ラベル・現在値・+-ボタンからなる1行の設定項目を作成する。
+   * 「スマホでもプレイできるように」への対応: 従来はx±220px等の固定
+   * オフセットで、幅の狭いスマホ画面(360〜430px前後)ではラベルや+/-
+   * ボタンが画面外に切れてしまっていた。this._uiScale(画面の実サイズ
+   * から算出した縮小率、ResponsiveUI.computeUIScale参照)を全オフセット
+   * に一律で乗算することで、狭い画面では行全体が縮小されて画面内に
+   * 収まるようにする。
+   */
   _createStepperRow(x, y, labelText, getValueLabel, { onDecrease, onIncrease }) {
-    const label = this.add.text(x - 220, y, labelText, { fontSize: '16px', color: '#ffffff' }).setOrigin(0, 0.5);
-    const valueText = this.add.text(x + 30, y, getValueLabel(), { fontSize: '16px', color: '#ffe066' }).setOrigin(0.5);
+    const s = this._uiScale ?? 1;
+    const label = this.add.text(x - 220 * s, y, labelText, { fontSize: scaledFontPx(16, s), color: '#ffffff' }).setOrigin(0, 0.5);
+    const valueText = this.add.text(x + 30 * s, y, getValueLabel(), { fontSize: scaledFontPx(16, s), color: '#ffe066' }).setOrigin(0.5);
     const refresh = () => valueText.setText(getValueLabel());
 
-    const minusBtn = this._createStepperButton(x - 60, y, '-', () => {
+    const minusBtn = this._createStepperButton(x - 60 * s, y, '-', () => {
       onDecrease();
       refresh();
     });
-    const plusBtn = this._createStepperButton(x + 150, y, '+', () => {
+    const plusBtn = this._createStepperButton(x + 150 * s, y, '+', () => {
       onIncrease();
       refresh();
     });
@@ -645,8 +712,14 @@ export class OnlineLobbyScene extends Phaser.Scene {
   }
 
   _createStepperButton(x, y, label, onClick) {
+    const s = this._uiScale ?? 1;
     const btn = this.add
-      .text(x, y, label, { fontSize: '18px', color: '#ffffff', backgroundColor: '#3a3a3a', padding: { x: 10, y: 2 } })
+      .text(x, y, label, {
+        fontSize: scaledFontPx(18, s),
+        color: '#ffffff',
+        backgroundColor: '#3a3a3a',
+        padding: { x: Math.round(10 * s), y: Math.round(2 * s) },
+      })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
     btn.on('pointerdown', () => {

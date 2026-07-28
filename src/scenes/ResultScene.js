@@ -19,6 +19,7 @@ import {
 import { soundSystem } from '../systems/SoundSystem.js';
 import { rankingSystem } from '../systems/RankingSystem.js';
 import { Save } from '../utils/Save.js';
+import { computeUIScale, scaledFontPx } from '../utils/ResponsiveUI.js';
 
 export class ResultScene extends Phaser.Scene {
   constructor() {
@@ -49,31 +50,39 @@ export class ResultScene extends Phaser.Scene {
     const isPvp = this.humanPlayerIds.length > 1;
     soundSystem.playSE(this.players.length > 0 ? (isHumanWinner ? 'victory' : 'defeat') : 'button');
 
-    this.add.text(centerX, 50, 'リザルト', { fontSize: '32px', color: '#ffffff' }).setOrigin(0.5);
+    // 「スマホでもプレイできるように」への対応: リザルトテーブルは
+    // centerX±260px前後の固定オフセットで列を並べていたため、スマホの
+    // 狭い画面(360〜430px前後)では左端の列が画面外に切れてしまっていた。
+    // 画面の実サイズから縮小率を算出し、列オフセット・フォントサイズに
+    // 一律で乗算することで画面内に収める(ResponsiveUI.computeUIScale参照)。
+    this._uiScale = computeUIScale(this.scale.width, this.scale.height);
+    const s = this._uiScale;
+
+    this.add.text(centerX, 50 * s, 'リザルト', { fontSize: scaledFontPx(32, s), color: '#ffffff' }).setOrigin(0.5);
 
     // PVPでは「あなた」という単一人称が成立しないため、勝者が人間なら
     // その旨だけを添える（例:「勝者: プレイヤー2（プレイヤー）」）。
     const winnerLabel = this.winnerPlayerId
       ? `勝者: プレイヤー${this.winnerPlayerId}${isHumanWinner ? (isPvp ? '（プレイヤー）' : '（あなた）') : ''}`
       : '引き分け';
-    this.add.text(centerX, 95, winnerLabel, { fontSize: '22px', color: '#ffe066' }).setOrigin(0.5);
+    this.add.text(centerX, 95 * s, winnerLabel, { fontSize: scaledFontPx(22, s), color: '#ffe066' }).setOrigin(0.5);
 
-    this._renderTable(centerX, 140);
+    this._renderTable(centerX, 140 * s);
 
     this.rankingStatusText = this.add
-      .text(centerX, screenHeight - 90, 'ランキングに記録中...', {
-        fontSize: '14px',
+      .text(centerX, screenHeight - 90 * s, 'ランキングに記録中...', {
+        fontSize: scaledFontPx(14, s),
         color: '#888888',
       })
       .setOrigin(0.5);
     this._submitRankingResults();
 
     const backText = this.add
-      .text(centerX, screenHeight - 40, 'タイトルに戻る', {
-        fontSize: '20px',
+      .text(centerX, screenHeight - 40 * s, 'タイトルに戻る', {
+        fontSize: scaledFontPx(20, s),
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
-        padding: { x: 12, y: 6 },
+        padding: { x: Math.round(12 * s), y: Math.round(6 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -140,6 +149,7 @@ export class ResultScene extends Phaser.Scene {
   }
 
   _renderTable(centerX, startY) {
+    const s = this._uiScale ?? 1;
     const rows = this.players
       .map((p) => ({
         ...p,
@@ -149,16 +159,18 @@ export class ResultScene extends Phaser.Scene {
       .sort((a, b) => (a.rank === '-' ? 99 : a.rank) - (b.rank === '-' ? 99 : b.rank));
 
     const header = ['順位', 'プレイヤー', '撃破', '爆破', 'アイテム', '経験値'];
-    const colX = [-260, -190, -60, 10, 80, 170];
+    // 「スマホでもプレイできるように」への対応: 列オフセットにthis._uiScale
+    // を乗算し、狭い画面では表全体を縮小して画面内に収める。
+    const colX = [-260, -190, -60, 10, 80, 170].map((v) => v * s);
 
     header.forEach((label, i) => {
       this.add
-        .text(centerX + colX[i], startY, label, { fontSize: '14px', color: '#aaaaaa' })
+        .text(centerX + colX[i], startY, label, { fontSize: scaledFontPx(14, s), color: '#aaaaaa' })
         .setOrigin(0, 0.5);
     });
 
     rows.forEach((row, i) => {
-      const y = startY + 28 + i * 26;
+      const y = startY + (28 + i * 26) * s;
       const isHuman = this.humanPlayerIds.includes(row.playerId);
       const nameLabel = `プレイヤー${row.playerId}${row.isAI ? '(AI)' : ''}${isHuman ? ' ★' : ''}`;
       const color = isHuman ? '#ffe066' : '#ffffff';
@@ -166,7 +178,7 @@ export class ResultScene extends Phaser.Scene {
 
       values.forEach((value, colIdx) => {
         this.add
-          .text(centerX + colX[colIdx], y, String(value), { fontSize: '15px', color })
+          .text(centerX + colX[colIdx], y, String(value), { fontSize: scaledFontPx(15, s), color })
           .setOrigin(0, 0.5);
       });
     });

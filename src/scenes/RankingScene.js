@@ -15,6 +15,7 @@ import { SCENE_KEYS } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
 import { rankingSystem } from '../systems/RankingSystem.js';
 import { isSupabaseConfigured } from '../config/supabaseConfig.js';
+import { computeUIScale, scaledFontPx } from '../utils/ResponsiveUI.js';
 
 export class RankingScene extends Phaser.Scene {
   constructor() {
@@ -32,23 +33,27 @@ export class RankingScene extends Phaser.Scene {
       this._sceneActive = false;
     });
 
-    this.add.text(centerX, 40, 'ランキング', { fontSize: '28px', color: '#ffffff' }).setOrigin(0.5);
+    // 「スマホでもプレイできるように」への対応: 画面の実サイズから縮小率を
+    // 算出し、フォントサイズに一律で乗算する(ResponsiveUI.computeUIScale参照)。
+    const s = computeUIScale(this.scale.width, this.scale.height);
+
+    this.add.text(centerX, 40 * s, 'ランキング', { fontSize: scaledFontPx(28, s), color: '#ffffff' }).setOrigin(0.5);
 
     const sourceLabel = isSupabaseConfigured()
       ? 'Supabase上の全対戦結果を集計(勝利数順、上位20名)'
       : 'この端末での対戦履歴のみ(Supabase未設定・勝利数順)';
-    this.add.text(centerX, 75, sourceLabel, { fontSize: '13px', color: '#88ddaa' }).setOrigin(0.5);
+    this.add.text(centerX, 75 * s, sourceLabel, { fontSize: scaledFontPx(13, s), color: '#88ddaa' }).setOrigin(0.5);
 
     this.listText = this.add
-      .text(centerX, 110, '読み込み中...', { fontSize: '14px', color: '#ffffff', align: 'left', lineSpacing: 6 })
+      .text(centerX, 110 * s, '読み込み中...', { fontSize: scaledFontPx(14, s), color: '#ffffff', align: 'left', lineSpacing: 6 })
       .setOrigin(0.5, 0);
 
     const backBtn = this.add
-      .text(centerX, screenHeight - 40, 'タイトルに戻る', {
-        fontSize: '20px',
+      .text(centerX, screenHeight - 40 * s, 'タイトルに戻る', {
+        fontSize: scaledFontPx(20, s),
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
-        padding: { x: 12, y: 6 },
+        padding: { x: Math.round(12 * s), y: Math.round(6 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });

@@ -19,6 +19,7 @@ import {
   AI_DIFFICULTY,
 } from '../constants/GameConstants.js';
 import { soundSystem } from '../systems/SoundSystem.js';
+import { computeUIScale, scaledFontPx } from '../utils/ResponsiveUI.js';
 
 // OnlineLobbyScene.js(オンライン対戦のロビー)でも同じ選択肢を使うためexportする。
 export const DIFFICULTY_ORDER = [AI_DIFFICULTY.EASY, AI_DIFFICULTY.NORMAL, AI_DIFFICULTY.HARD, AI_DIFFICULTY.EXPERT];
@@ -56,14 +57,22 @@ export class LobbyScene extends Phaser.Scene {
     // (main.js参照)ため、固定のSCREEN_WIDTHではなくその時点の実サイズ
     // (this.scale.width)を基準に中央揃えする。
     const centerX = this.scale.width / 2;
+    // 「スマホでもプレイできるように」への対応: 画面の実サイズから縮小率を
+    // 算出し、以降のy座標・フォントサイズに一律で乗算することで、スマホの
+    // 狭い/低い画面でもレイアウトが画面内に収まるようにする(_createStepperRow
+    // 側ではx方向のオフセットにも同じ縮小率を使う。ResponsiveUI.computeUIScale
+    // 参照。デスクトップの標準的な画面サイズでは縮小率が1になり、従来の
+    // 座標と完全に一致する)。
+    this._uiScale = computeUIScale(this.scale.width, this.scale.height);
+    const s = this._uiScale;
 
     this.add
-      .text(centerX, 50, '対戦設定', { fontSize: '28px', color: '#ffffff' })
+      .text(centerX, 50 * s, '対戦設定', { fontSize: scaledFontPx(28, s), color: '#ffffff' })
       .setOrigin(0.5);
 
     const participantRow = this._createStepperRow(
       centerX,
-      120,
+      120 * s,
       '参加人数',
       () => `${this.settings.participantCount}人 (人間${this.settings.humanCount}/AI${this.settings.participantCount - this.settings.humanCount})`,
       {
@@ -82,7 +91,7 @@ export class LobbyScene extends Phaser.Scene {
 
     const humanRow = this._createStepperRow(
       centerX,
-      180,
+      180 * s,
       '人間プレイヤー数',
       () => `${this.settings.humanCount}人${this.settings.humanCount > 1 ? ' (ローカル対戦)' : ''}`,
       {
@@ -98,7 +107,7 @@ export class LobbyScene extends Phaser.Scene {
       }
     );
 
-    this._createStepperRow(centerX, 240, 'AI難易度', () => DIFFICULTY_LABEL[DIFFICULTY_ORDER[this.settings.difficultyIndex]], {
+    this._createStepperRow(centerX, 240 * s, 'AI難易度', () => DIFFICULTY_LABEL[DIFFICULTY_ORDER[this.settings.difficultyIndex]], {
       onDecrease: () => {
         this.settings.difficultyIndex = Math.max(0, this.settings.difficultyIndex - 1);
       },
@@ -109,7 +118,7 @@ export class LobbyScene extends Phaser.Scene {
 
     this._createStepperRow(
       centerX,
-      300,
+      300 * s,
       '制限時間',
       () => (TIME_LIMIT_OPTIONS_SEC[this.settings.timeLimitIndex] === null
         ? '制限時間なし'
@@ -125,11 +134,11 @@ export class LobbyScene extends Phaser.Scene {
     );
 
     const startText = this.add
-      .text(centerX, 400, '対戦開始', {
-        fontSize: '24px',
+      .text(centerX, 400 * s, '対戦開始', {
+        fontSize: scaledFontPx(24, s),
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
-        padding: { x: 16, y: 8 },
+        padding: { x: Math.round(16 * s), y: Math.round(8 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -139,11 +148,11 @@ export class LobbyScene extends Phaser.Scene {
     });
 
     const backText = this.add
-      .text(centerX, 440, 'タイトルに戻る', {
-        fontSize: '18px',
+      .text(centerX, 440 * s, 'タイトルに戻る', {
+        fontSize: scaledFontPx(18, s),
         color: '#cccccc',
         backgroundColor: '#2a2a2a',
-        padding: { x: 12, y: 6 },
+        padding: { x: Math.round(12 * s), y: Math.round(6 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -165,21 +174,29 @@ export class LobbyScene extends Phaser.Scene {
     });
   }
 
-  /** ラベル・現在値・+-ボタンからなる1行の設定項目を作成する */
+  /**
+   * ラベル・現在値・+-ボタンからなる1行の設定項目を作成する。
+   * 「スマホでもプレイできるように」への対応: 従来はx±220px等の固定
+   * オフセットで、幅の狭いスマホ画面(360〜430px前後)ではラベルや+/-
+   * ボタンが画面外に切れてしまっていた。this._uiScale(create()で算出済み、
+   * ResponsiveUI.computeUIScale参照)を全オフセットに一律で乗算することで、
+   * 狭い画面では行全体が縮小されて画面内に収まるようにする。
+   */
   _createStepperRow(x, y, label, getValueLabel, { onDecrease, onIncrease }) {
-    this.add.text(x - 220, y, label, { fontSize: '18px', color: '#ffffff' }).setOrigin(0, 0.5);
+    const s = this._uiScale ?? 1;
+    this.add.text(x - 220 * s, y, label, { fontSize: scaledFontPx(18, s), color: '#ffffff' }).setOrigin(0, 0.5);
 
     const valueText = this.add
-      .text(x + 30, y, getValueLabel(), { fontSize: '18px', color: '#ffe066' })
+      .text(x + 30 * s, y, getValueLabel(), { fontSize: scaledFontPx(18, s), color: '#ffe066' })
       .setOrigin(0.5);
 
     const refresh = () => valueText.setText(getValueLabel());
 
-    const minusBtn = this._createStepperButton(x - 60, y, '-', () => {
+    const minusBtn = this._createStepperButton(x - 60 * s, y, '-', () => {
       onDecrease();
       refresh();
     });
-    const plusBtn = this._createStepperButton(x + 150, y, '+', () => {
+    const plusBtn = this._createStepperButton(x + 150 * s, y, '+', () => {
       onIncrease();
       refresh();
     });
@@ -188,12 +205,13 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   _createStepperButton(x, y, label, onClick) {
+    const s = this._uiScale ?? 1;
     const btn = this.add
       .text(x, y, label, {
-        fontSize: '20px',
+        fontSize: scaledFontPx(20, s),
         color: '#ffffff',
         backgroundColor: '#3a3a3a',
-        padding: { x: 12, y: 4 },
+        padding: { x: Math.round(12 * s), y: Math.round(4 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
