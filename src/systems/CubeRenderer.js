@@ -44,6 +44,7 @@ import {
 } from '../constants/GameConstants.js';
 import { FACE_AXES, faceLocalToWorld } from '../constants/CubeTopology.js';
 import { ITEM_EMOJI } from '../objects/Item.js';
+import { computeCameraFit } from '../utils/CameraFit.js';
 
 const CUBE_RADIUS = 5; // 立方体の中心から各面までの距離(Three.jsのワールド単位)
 const BLOCK_OUTWARD = 0.16; // ブロックが面から浮く距離
@@ -154,7 +155,17 @@ export class CubeRenderer {
     this.ready = true;
   }
 
-  /** canvasの表示サイズ(CSS)に合わせてレンダラー/カメラを更新する */
+  /**
+   * canvasの表示サイズ(CSS)に合わせてレンダラー/カメラを更新する。
+   *
+   * 「スマホ用の画面に面がおさまるようにしてほしい」への対応:
+   * canvasのアスペクト比(幅/高さ)が1未満(スマホの縦長画面。特に右側
+   * HUDパネル分を差し引いた3D描画領域は非常に縦長になりやすい)になると、
+   * PerspectiveCamera.fovは縦方向の視野角のため、横方向の視野が大幅に
+   * 狭くなり、サイコロの面の左右が見切れてしまっていた。computeCameraFit
+   * (CameraFit.js)でaspectに応じた縦方向FOV・カメラ距離の倍率を算出し、
+   * 横方向の視野を常に確保するようにする。
+   */
   resize() {
     if (!this.renderer) return;
     const w = Math.max(1, this.canvas.clientWidth || this.canvas.width);
@@ -162,6 +173,11 @@ export class CubeRenderer {
     this.renderer.setSize(w, h, false);
     if (this.camera) {
       this.camera.aspect = w / h;
+      const { vFovDeg, distanceScale } = computeCameraFit(this.camera.aspect);
+      this.camera.fov = vFovDeg;
+      if (this._camDirUnit) {
+        this.camera.position.copy(this._camDirUnit).multiplyScalar(CAM_DISTANCE * distanceScale);
+      }
       this.camera.updateProjectionMatrix();
     }
   }
@@ -181,6 +197,10 @@ export class CubeRenderer {
     // targetUp(b): cとaの両方に直交する「画面上方向」(a,b,cで正規直交系)。
     const b = new THREE.Vector3().crossVectors(c, a);
 
+    // カメラの向き(c)はスマホ対応のresize()でも変わらず一定なので保持しておき、
+    // resize()側では距離(CAM_DISTANCE*distanceScale)だけをこの向きに沿って
+    // 変える(=カメラを同じ方向のまま前後させる)。
+    this._camDirUnit = c.clone();
     this.camera.position.copy(c).multiplyScalar(CAM_DISTANCE);
     this.camera.up.copy(b);
     this.camera.lookAt(0, 0, 0);

@@ -76,51 +76,53 @@ console.log('\n== 3. CubeStage.generate() ==');
   );
 }
 
-console.log('\n== 3b. CubeStage.generate(): 四隅+approachマスが壊せるブロックとして開放されている ==');
+console.log('\n== 3b. CubeStage.generate(): 面の外周(横壁含む)全体が壊せるブロックとして開放されている ==');
 {
-  // 外周は基本HARD(壊せない壁)。ただし各隅の「隅そのもの」と「そこへ歩いて
-  // 近づくためのapproachマス(辺沿いの隣)」の計2マスは例外的にSOFT(壊せる
-  // ブロック)として開放されており、両方を壊せば内側から歩いて隅まで到達し、
-  // 面の端を超えて隣接する面へ渡れるようになっている。
-  // (隅そのものだけを開放しても、その2つの直交隣接マスがどちらも外周HARDの
-  // ままだと、そこへ近づく手段が無く実質誰も到達できない、という抜けが
-  // あったため、approachマスもあわせて開放するよう修正した)
+  // 「各面の4つ角からしか隣の面へ移動できないのではなく、横壁に壊せる
+  // ブロックを設置してほしい」という要望への対応で、以前は各隅の
+  // 「隅そのもの」と「そこへ歩いて近づくためのapproachマス(辺沿いの隣)」
+  // の計8マスのみを例外的にSOFT(壊せるブロック)として開放していたが、
+  // 面の外周(perimeter)全体をSOFTとして開放するよう変更した。これにより
+  // 四隅に限らず、辺の途中(横壁)のどこを壊しても面の端を超えて隣接する
+  // 面へ渡れるようになる。
   const { BLOCK_TYPES } = await import('./src/constants/GameConstants.js');
   const cube = new CubeStage(11, 11);
   cube.generate(6);
 
-  function cornerNotches(stage) {
-    const lastCol = stage.cols - 1;
-    const lastRow = stage.rows - 1;
-    return [
-      { corner: [0, 0], approach: [1, 0] },
-      { corner: [lastCol, 0], approach: [lastCol - 1, 0] },
-      { corner: [0, lastRow], approach: [1, lastRow] },
-      { corner: [lastCol, lastRow], approach: [lastCol - 1, lastRow] },
-    ];
+  function isPerimeter(stage, col, row) {
+    return col === 0 || row === 0 || col === stage.cols - 1 || row === stage.rows - 1;
   }
 
-  let allOpen = true;
+  let allPerimeterOpen = true;
   for (const f of CUBE_FACE_NAMES) {
     const stage = cube.getFaceStage(f);
-    for (const { corner, approach } of cornerNotches(stage)) {
-      if (stage.getBlockType(...corner) !== BLOCK_TYPES.SOFT) allOpen = false;
-      if (stage.getBlockType(...approach) !== BLOCK_TYPES.SOFT) allOpen = false;
+    for (let row = 0; row < stage.rows; row++) {
+      for (let col = 0; col < stage.cols; col++) {
+        if (!isPerimeter(stage, col, row)) continue;
+        if (stage.getBlockType(col, row) !== BLOCK_TYPES.SOFT) allPerimeterOpen = false;
+      }
     }
   }
-  check('6面すべての四隅+approachマスが壊せるブロック(SOFT)になっている', allOpen);
+  check('6面すべての外周(四隅+横壁)が壊せるブロック(SOFT)になっている', allPerimeterOpen);
 
-  // 四隅・approachマス以外の外周(辺の途中)は従来通りHARD(壊せない壁)のままであることも確認する
-  let edgesStillHard = true;
+  // 辺の途中(隅ではない横壁のマス)を実際に壊すと、その場に立てるように
+  // なり、面の外へ移動すると隣接面へ渡れることを確認する(以前は辺の
+  // 途中はHARDのままで、これができなかった)。
   const midStage = cube.getFaceStage('FRONT');
   const midCol = Math.floor(midStage.cols / 2);
-  if (midStage.getBlockType(midCol, 0) !== BLOCK_TYPES.HARD) edgesStillHard = false;
-  if (midStage.getBlockType(0, midCol) !== BLOCK_TYPES.HARD) edgesStillHard = false;
-  check('辺の途中(隅・approachマス以外)は従来通りHARDのまま', edgesStillHard);
+  check('辺の途中(横壁)のマスは壊す前は通行不可', !midStage.isWalkable(midCol, 0));
+  midStage.breakBlock(midCol, 0);
+  check('辺の途中(横壁)のマスを壊すと歩いて立てるようになる', midStage.isWalkable(midCol, 0));
+  const viaMidWall = cube.resolveMove('FRONT', midCol, 0, 'up');
+  check(
+    '辺の途中(横壁)のマスに立った状態から面の外へ移動すると隣接面へ渡れる',
+    viaMidWall && viaMidWall.crossed === true && viaMidWall.face !== 'FRONT'
+  );
 
   // 実際のプレイに即した順序で破壊してみる: まずapproachマスを壊し(内側から
   // 歩いて近づける)、そこから隅マスを壊す。その後、隅マスからは実際に
-  // resolveMove()で隣接面へ渡れることを確認する。
+  // resolveMove()で隣接面へ渡れることを確認する(四隅についても従来通り
+  // 機能し続けることの回帰確認)。
   const frontStage = cube.getFaceStage('FRONT');
   frontStage.breakBlock(1, 0); // 左上の隅へのapproachマスを破壊 -> EMPTYになり歩けるようになる
   frontStage.breakBlock(0, 0); // 続けて隅そのものを破壊 -> EMPTYになる
@@ -138,9 +140,9 @@ console.log('\n== 3b. CubeStage.generate(): 四隅+approachマスが壊せるブ
   );
 }
 
-console.log('\n== 3c. getMirrorCells: 隅・approachマスを壊すと隣接面の対応マスも連動して壊せる ==');
+console.log('\n== 3c. getMirrorCells: 外周マス(四隅・横壁とも)を壊すと隣接面の対応マスも連動して壊せる ==');
 {
-  // 不具合修正の確認: 隅・approachマスを開放しただけでは、面をまたいだ先
+  // 不具合修正の確認: 外周マスを開放しただけでは、面をまたいだ先
   // (隣接面)の対応マスがSOFTのまま残り、爆風が面をまたがない設計上そちら
   // は絶対に壊せず、👻無しでは足を踏み入れることもできず、結果的に
   // 「その面から一切移動できない」デッドロックになってしまっていた。
@@ -149,8 +151,8 @@ console.log('\n== 3c. getMirrorCells: 隅・approachマスを壊すと隣接面�
   const cube = new CubeStage(11, 11);
   cube.generate(6);
 
-  // 通常のマス(隅・approach以外)ではミラーは無い
-  check('通常のマスにはミラーが無い', cube.getMirrorCells('FRONT', 5, 5).length === 0);
+  // 内側のマス(外周以外)ではミラーは無い
+  check('内側のマスにはミラーが無い', cube.getMirrorCells('FRONT', 5, 5).length === 0);
 
   // 隅マス(0,0)は2方向(up/left)にまたぐため、ミラーが2つ返る
   const cornerMirrors = cube.getMirrorCells('FRONT', 0, 0);
@@ -160,18 +162,32 @@ console.log('\n== 3c. getMirrorCells: 隅・approachマスを壊すと隣接面�
     cornerMirrors.length === 2 && cornerMirrors[0].face !== cornerMirrors[1].face
   );
   check(
-    '隅マスのミラー先も、その面自身の隅・approachマスの一覧に含まれる(対称性)',
+    '隅マスのミラー先も、その面自身の外周(四隅・横壁いずれか)に含まれる(対称性)',
     cornerMirrors.every((m) => {
       const mStage = cube.getFaceStage(m.face);
       const isBorder = m.col === 0 || m.row === 0 || m.col === mStage.cols - 1 || m.row === mStage.rows - 1;
-      // ミラー先も外周上の特別なマス(隅かapproach)であるはず
       return isBorder;
     })
   );
 
-  // approachマス(1,0)は1方向(up)のみなので、ミラーは1つ
+  // approachマス(1,0、隅の隣)は1方向(up)のみなので、ミラーは1つ
   const approachMirrors = cube.getMirrorCells('FRONT', 1, 0);
   check('approachマスのミラーは1つ', approachMirrors.length === 1);
+
+  // 辺の途中(隅から離れた横壁のマス)も1方向のみなので、ミラーは1つ
+  // (「横壁に壊せるブロックを設置してほしい」要望で新たに壊せるように
+  // なったマス。四隅と同じ仕組みで連動破壊できることを確認する)
+  const midStageForMirror = cube.getFaceStage('FRONT');
+  const midColForMirror = Math.floor(midStageForMirror.cols / 2);
+  const midWallMirrors = cube.getMirrorCells('FRONT', midColForMirror, 0);
+  check('辺の途中(横壁)のマスのミラーは1つ', midWallMirrors.length === 1);
+  check(
+    '辺の途中(横壁)のミラー先も隣接面の外周上にある',
+    midWallMirrors.every((m) => {
+      const mStage = cube.getFaceStage(m.face);
+      return m.col === 0 || m.row === 0 || m.col === mStage.cols - 1 || m.row === mStage.rows - 1;
+    })
+  );
 
   // 実際に爆弾でFRONTの隅を壊すシミュレーション: GameSceneの
   // _onBombDetonateと同じ処理(breakBlock + getMirrorCellsで連動破壊)を

@@ -168,7 +168,10 @@ console.log('\n== 5. AI/AISystemのimportとインスタンス化 ==');
 {
   const fakePlayer = { isAlive: true, isMoving: false, col: 1, row: 1, canPassSoftBlock: false, canKickBombs: false };
   const ai = new AI(fakePlayer, 'hard');
-  check('AIインスタンスが難易度プロファイルを保持する', ai.profile.decisionIntervalMs === 220);
+  // 2026-07「AIのレベルを少し下げてほしい」対応でHARDのdecisionIntervalMsを
+  // 220ms→260msに緩和した(値そのものより「プロファイルが正しく反映される
+  // こと」の確認が主目的のため、実際の定数値と一致させて回帰防止する)。
+  check('AIインスタンスが難易度プロファイルを保持する', ai.profile.decisionIntervalMs === 260);
 
   const aiSystem = new AISystem();
   aiSystem.setup([fakePlayer, fakePlayer], 'expert');

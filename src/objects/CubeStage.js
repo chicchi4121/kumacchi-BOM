@@ -12,11 +12,13 @@
  * 現状のスコープ（v1）:
  * - 各面は独立したミニマップとして生成する。各面の中央を、その面に
  *   割り当てられたプレイヤー1人分の安全地帯として確保する。
- * - 面の外周は基本的にHARD(壊せない壁)だが、四隅とその approach マス
- *   (隅へ歩いて近づくための辺沿いの隣接1マス、計8マス)だけは例外的に
- *   壊せるブロック(SOFT)として開放しており(_openFaceCorners)、そこを
- *   壊せば(または👻取得済みならそのまま)面の端まで到達して隣接する
- *   面へ渡れる。辺の途中(隅・approachマス以外)からは面をまたげない。
+ * - 面の外周(perimeter、四隅を含む)はStage.generate()の既定ではHARD
+ *   (壊せない壁)だが、生成後に全周を壊せるブロック(SOFT)として開放する
+ *   (_openFaceWalls)。これにより、四隅に限らず横壁(辺の途中)のどこを
+ *   壊しても(または👻取得済みならそのまま)面の端まで到達して隣接する
+ *   面へ渡れる（「各面の4つ角からしか隣の面へ移動できない」という以前の
+ *   制限を撤廃し、辺のどこからでも壊せるブロックを介して面をまたげる
+ *   ようにする要望への対応）。
  * - 爆風・爆弾の誘爆は面をまたいで伝播しない（爆風の計算はExplosion.jsが
  *   各面のStageに対して行うため、自然と面内で完結する）。
  * - プレイヤーの移動のみが面をまたぐ（resolveMove）。
@@ -46,23 +48,31 @@ export class CubeStage {
       this.faces[name] = new Stage(cols, rows);
     }
     this.startPositions = [];
+  }
 
-    // 面の四隅・approachマス(計8マス)の一覧と、それぞれのマスから面を
-    // またぐ移動を起こせる方向(crossDirs)。全面同サイズ・同レイアウト
-    // なので面をまたいでも(col,row)だけで共通に引ける一覧として持つ。
-    const lastCol = cols - 1;
-    const lastRow = rows - 1;
-    this._notchList = [
-      { col: 0, row: 0, crossDirs: ['up', 'left'] },
-      { col: 1, row: 0, crossDirs: ['up'] },
-      { col: lastCol, row: 0, crossDirs: ['up', 'right'] },
-      { col: lastCol - 1, row: 0, crossDirs: ['up'] },
-      { col: 0, row: lastRow, crossDirs: ['down', 'left'] },
-      { col: 1, row: lastRow, crossDirs: ['down'] },
-      { col: lastCol, row: lastRow, crossDirs: ['down', 'right'] },
-      { col: lastCol - 1, row: lastRow, crossDirs: ['down'] },
-    ];
-    this._notchByKey = new Map(this._notchList.map((n) => [`${n.col},${n.row}`, n]));
+  /**
+   * (col, row)が面の外周(perimeter)上にあるかどうかを判定する。
+   */
+  _isPerimeterCell(col, row) {
+    return col === 0 || row === 0 || col === this.cols - 1 || row === this.rows - 1;
+  }
+
+  /**
+   * (col, row)が面の外周セルである場合、そこを破壊すると面をまたぐ移動を
+   * 起こせるようになる方向(crossDirs)の一覧を返す。辺の途中(1方向のみ)・
+   * 四隅(2方向)のどちらも自動的に判定できる汎用ロジック
+   * (「4つ角限定」を撤廃し、横壁のどこからでも面をまたげるようにする
+   * 要望への対応。以前は四隅+approachマスのみのハードコードされた
+   * 一覧(_notchList)を使っていたが、外周全体を壊せるブロックにした
+   * ことで、この判定ロジックだけで四隅・辺の途中の両方をカバーできる)。
+   */
+  _crossDirsForCell(col, row) {
+    const dirs = [];
+    if (row === 0) dirs.push('up');
+    if (row === this.rows - 1) dirs.push('down');
+    if (col === 0) dirs.push('left');
+    if (col === this.cols - 1) dirs.push('right');
+    return dirs;
   }
 
   /**
@@ -82,8 +92,8 @@ export class CubeStage {
     for (const name of CUBE_FACE_NAMES) {
       const stage = this.faces[name];
       stage.generate(1);
-      // 面の四隅を壊せるブロックとして開放する(下記_openFaceCorners参照)。
-      this._openFaceCorners(stage);
+      // 面の外周(横壁含む)を壊せるブロックとして開放する(下記_openFaceWalls参照)。
+      this._openFaceWalls(stage);
     }
 
     const count = Math.max(1, Math.min(MAX_PLAYERS, playerCount, CUBE_FACE_NAMES.length));
@@ -135,8 +145,8 @@ export class CubeStage {
   }
 
   /**
-   * 面の四隅(col=0,row=0 / col=cols-1,row=0 / col=0,row=rows-1 / col=cols-1,row=rows-1)を
-   * 壊せるブロック(SOFT)として開放する。
+   * 面の外周(perimeter、四隅と横壁の両方を含む)を壊せるブロック(SOFT)
+   * として開放する。
    *
    * Stage.generate()は面の外周を常にHARD(壊せない壁)として生成するため、
    * このままでは面の端のマスに一度も立てず、resolveMove()が用意している
@@ -144,48 +154,49 @@ export class CubeStage {
    * (=見た目は立方体でも、実際には他の面へ移動する手段が無い)という
    * 状態になってしまう。
    *
-   * 【重要】隅のマス1つだけを開放しても、その直交2方向の隣接マスは
-   * どちらも外周(HARD)のままなので、実際にはそこへ歩いて近づく手段も
-   * 爆風を通す手段も無く「開放したはずの隅に誰も到達できない」という
-   * 状態になってしまう。そのため、各隅について「隅そのもの」に加えて、
-   * 内側のマスから歩いて近づくための隣接1マス(辺沿いの隣)もあわせて
-   * 壊せるブロックにしておく(=隅へ到達するための2マス分の「通路」を
-   * 用意する)。隅へ到達できれば、そこから残るもう一方の方向へも
-   * resolveMove()でそのまま面をまたげるため、隣接approachマスは1つで
-   * 両方向(例: 左上の隅なら上方向・左方向の両方)への面またぎが可能になる。
-   * 辺の途中(隅とその approach マス以外)は従来通りHARDのままにして、
-   * 各面の見た目上の輪郭(サイコロの面の境目)ははっきり残す。
+   * 「各面の4つ角からしか隣の面へ移動できないのではなく、横壁に壊せる
+   * ブロックを設置してほしい」という要望に対応し、以前は四隅とその
+   * approachマス(計8マス)のみを開放していたが、外周全体(横壁含む)を
+   * 開放するよう変更した。四隅のマスは(その両隣も外周であるため)従来
+   * 通り2方向どちらへも面をまたげ、横壁の途中のマスは1方向のみへ面を
+   * またげる(_crossDirsForCell参照)。外周全体が壊せるブロックになった
+   * ことで、四隅への「歩いて近づくための2マス分の通路」を個別に用意する
+   * 必要も無くなった(隣接する横壁マスも同様に壊せるブロックとして開放
+   * されるため、自然に通り道になる)。
    */
-  _openFaceCorners(stage) {
-    for (const { col, row } of this._notchList) {
-      if (stage.getBlockType(col, row) === BLOCK_TYPES.HARD) {
-        stage.setBlockType(col, row, BLOCK_TYPES.SOFT);
+  _openFaceWalls(stage) {
+    for (let row = 0; row < stage.rows; row++) {
+      for (let col = 0; col < stage.cols; col++) {
+        if (!this._isPerimeterCell(col, row)) continue;
+        if (stage.getBlockType(col, row) === BLOCK_TYPES.HARD) {
+          stage.setBlockType(col, row, BLOCK_TYPES.SOFT);
+        }
       }
     }
   }
 
   /**
-   * (face, col, row)が隅・approachマスなら、それを破壊した際に連動して
+   * (face, col, row)が面の外周マスなら、それを破壊した際に連動して
    * 開けるべき「隣接する面の対応マス」の一覧を返す。それ以外のマスなら
    * 空配列を返す。
    *
-   * 【不具合修正】隅・approachマスを壊せるようにしても、面をまたいだ先
-   * (隣接面)の対応マスがSOFTのまま残っていると、そちらは「爆風が面を
-   * またいで伝播しない」設計上、自分のいる面からは絶対に壊せず、かつ
-   * 👻取得済みでなければ足を踏み入れることもできない
-   * (resolveMove自体は着地先を計算できても、Player.tryMoveのisWalkable
-   * チェックで弾かれてしまう)。つまり自分側だけ壊しても、相手側が塞がった
-   * ままなら実質「その面から一切移動できない」状態になってしまう
-   * (ユーザー報告の不具合そのもの)。
-   * これを解消するため、隅・approachマスが破壊された際は、面をまたいだ
-   * 先の対応マスも(壊せるブロックであれば)同時に破壊し、双方向とも
-   * 即座に通行可能になるようにする(GameScene._onBombDetonateから使用)。
+   * 【不具合修正】外周マスを壊せるようにしても、面をまたいだ先(隣接面)の
+   * 対応マスがSOFTのまま残っていると、そちらは「爆風が面をまたいで伝播
+   * しない」設計上、自分のいる面からは絶対に壊せず、かつ👻取得済みで
+   * なければ足を踏み入れることもできない(resolveMove自体は着地先を計算
+   * できても、Player.tryMoveのisWalkableチェックで弾かれてしまう)。
+   * つまり自分側だけ壊しても、相手側が塞がったままなら実質「その面から
+   * 一切移動できない」状態になってしまう(ユーザー報告の不具合そのもの)。
+   * これを解消するため、外周マスが破壊された際は、面をまたいだ先の
+   * 対応マスも(壊せるブロックであれば)同時に破壊し、双方向とも即座に
+   * 通行可能になるようにする(GameScene._onBombDetonateから使用)。
    */
   getMirrorCells(face, col, row) {
-    const notch = this._notchByKey.get(`${col},${row}`);
-    if (!notch) return [];
+    const stage = this.faces[face];
+    if (!stage || !this._isPerimeterCell(col, row)) return [];
+    const crossDirs = this._crossDirsForCell(col, row);
     const mirrors = [];
-    for (const dir of notch.crossDirs) {
+    for (const dir of crossDirs) {
       const resolved = this.resolveMove(face, col, row, dir);
       if (resolved && resolved.crossed) {
         mirrors.push({ face: resolved.face, col: resolved.col, row: resolved.row });

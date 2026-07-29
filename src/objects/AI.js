@@ -32,38 +32,43 @@ import { random } from '../utils/Random.js';
 import { Explosion } from './Explosion.js';
 
 // 難易度ごとの行動パラメータ（データ駆動）
+// 「AIのレベルを少し下げてほしい」という要望への対応(2026-07)で、4段階
+// 全ての難易度を一律で少しだけ弱める方向に調整した(判断間隔を少し延ばす
+// =反応を少し遅く、mistakeChance(回避を試みない確率)を少し増やす、
+// bombChance/killShotChance/chaseChance(積極性)を少し下げる)。各難易度間の
+// 相対的な強さの順序(EASY<NORMAL<HARD<EXPERT)は変えていない。
 const AI_PROFILES = Object.freeze({
   [AI_DIFFICULTY.EASY]: {
-    decisionIntervalMs: 500, // 判断の間隔（長いほど反応が遅い）
+    decisionIntervalMs: 600, // 判断の間隔（長いほど反応が遅い）
     // 危険地帯にいても回避に失敗する確率。
     // (自爆しすぎ対策で全難易度引き下げ済み。_findSafeDirection自体のBFS化で
     //  「回避を試みたのに失敗する」ケースは大幅に減ったため、mistakeChanceは
     //  純粋に「そもそも回避を試みない」割合として機能する)
-    mistakeChance: 0.2,
-    bombChance: 0.35, // ブロック破壊(徘徊/進路上)を試みる確率
-    killShotChance: 0.5, // 撃破チャンスを実行に移す確率
-    chaseChance: 0.3, // プレイヤーを追跡する確率（それ以外は徘徊/アイテム優先）
+    mistakeChance: 0.3,
+    bombChance: 0.28, // ブロック破壊(徘徊/進路上)を試みる確率
+    killShotChance: 0.4, // 撃破チャンスを実行に移す確率
+    chaseChance: 0.22, // プレイヤーを追跡する確率（それ以外は徘徊/アイテム優先）
   },
   [AI_DIFFICULTY.NORMAL]: {
-    decisionIntervalMs: 350,
-    mistakeChance: 0.1,
-    bombChance: 0.55,
-    killShotChance: 0.7,
-    chaseChance: 0.55,
+    decisionIntervalMs: 420,
+    mistakeChance: 0.16,
+    bombChance: 0.45,
+    killShotChance: 0.58,
+    chaseChance: 0.45,
   },
   [AI_DIFFICULTY.HARD]: {
-    decisionIntervalMs: 220,
-    mistakeChance: 0.04,
-    bombChance: 0.7,
-    killShotChance: 0.85,
-    chaseChance: 0.75,
+    decisionIntervalMs: 260,
+    mistakeChance: 0.07,
+    bombChance: 0.6,
+    killShotChance: 0.75,
+    chaseChance: 0.65,
   },
   [AI_DIFFICULTY.EXPERT]: {
-    decisionIntervalMs: 120,
-    mistakeChance: 0.01,
-    bombChance: 0.85,
-    killShotChance: 0.97,
-    chaseChance: 0.9,
+    decisionIntervalMs: 150,
+    mistakeChance: 0.03,
+    bombChance: 0.75,
+    killShotChance: 0.88,
+    chaseChance: 0.8,
   },
 });
 
