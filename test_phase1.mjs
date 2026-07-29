@@ -83,15 +83,38 @@ for (let trial = 0; trial < 20; trial++) {
   stage.generate(4);
   const grid = stage.grid;
 
-  // 外周は必ずHARD
-  let borderOk = true;
-  for (let c = 0; c < 15; c++) {
-    if (grid[0][c] !== BLOCK_TYPES.HARD || grid[10][c] !== BLOCK_TYPES.HARD) borderOk = false;
-  }
+  // 「端も全て他のマスと一緒にして」への対応の検証: 外周を特別扱いせず、
+  // 柱(col・rowが共に偶数のマスのみ)だけがHARDになり、それ以外(外周も
+  // 含め)は柱にならない。
+  let pillarRuleOk = true;
   for (let r = 0; r < 11; r++) {
-    if (grid[r][0] !== BLOCK_TYPES.HARD || grid[r][14] !== BLOCK_TYPES.HARD) borderOk = false;
+    for (let c = 0; c < 15; c++) {
+      const shouldBePillar = c % 2 === 0 && r % 2 === 0;
+      const isHard = grid[r][c] === BLOCK_TYPES.HARD;
+      if (shouldBePillar !== isHard) pillarRuleOk = false;
+    }
   }
-  if (trial === 0) check('外周が全てHARDブロック', borderOk);
+  if (trial === 0) check('柱(col・rowが共に偶数のマスのみ)だけがHARDになる(外周も同じルールに従う)', pillarRuleOk);
+
+  // 「壊せないブロックは前後左右斜めも1マス空けないと移動できない」への
+  // 対応の検証: どの柱も、隣接する8マス(前後左右斜め)のいずれにも別の柱が
+  // 存在しない(=必ず1マス以上の隙間がある)。
+  let gapOk = true;
+  for (let r = 0; r < 11; r++) {
+    for (let c = 0; c < 15; c++) {
+      if (!(c % 2 === 0 && r % 2 === 0)) continue;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr < 0 || nr >= 11 || nc < 0 || nc >= 15) continue;
+          if (nc % 2 === 0 && nr % 2 === 0) gapOk = false;
+        }
+      }
+    }
+  }
+  if (trial === 0) check('柱同士は前後左右斜め(8方向)いずれにも隣接しない(必ず1マス以上の隙間がある)', gapOk);
 
   // 各プレイヤー開始地点は必ず通行可能（安全地帯）
   let startOk = true;

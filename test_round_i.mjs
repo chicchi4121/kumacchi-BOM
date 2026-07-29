@@ -207,7 +207,11 @@ console.log('== 4. CubeStage.js: 横壁への対応が静的にも確認でき�
   check('古い_openFaceCornersメソッド定義は残っていない(_openFaceWallsに置き換え済み)', !/_openFaceCorners\(stage\)\s*\{/.test(src));
   check('外周全体を判定する_isPerimeterCellが存在する', /_isPerimeterCell\(col, row\)/.test(src));
   check('外周セルの面またぎ方向を判定する_crossDirsForCellが存在する', /_crossDirsForCell\(col, row\)/.test(src));
-  check('_openFaceWallsが外周(perimeter)全体をループしている', /_openFaceWalls\(stage\)/.test(src));
+  // 【2026-07再修正】「端も全て他のマスと一緒にしてほしい」への対応で
+  // _openFaceWalls(外周を強制的に壊せるブロックへ上書きする処理)自体を
+  // 撤廃したため、その存在確認は「無くなっていること」の確認に変わった。
+  // 詳細はtest_cube.mjsの3b/3cを参照。
+  check('_openFaceWallsは撤廃され、外周も通常のstage.generate()だけで生成される', !/_openFaceWalls\(/.test(src));
 }
 
 console.log();

@@ -4,8 +4,12 @@
  * 今回(2026-07)の6件の要望対応を検証する簡易ユニットテスト。
  *
  * 1. 「壊せないブロックを1マスあけて全マスにおいてほしい」→ Stage.jsの
- *    柱パターンがチェッカーボード((col+row)%2===0)になり、かつ開始地点は
- *    必ず空白になることの検証。
+ *    柱パターン(col・rowが共に偶数のマスのみ)が、外周も含め全マスに
+ *    一様に適用され、かつ隣接する柱同士が前後左右斜め(8方向)いずれにも
+ *    隙間なく並ばないこと、開始地点は必ず空白になることの検証
+ *    (2026-07再修正: チェッカーボード((col+row)%2===0)は柱同士が斜めに
+ *    隙間なく連続してしまう不具合があったため、8方向すべてに1マス以上の
+ *    隙間ができる伝統的な配置に戻し、あわせて外周の特別扱いも撤廃した)。
  * 2. 「VRMで入れたキャラを動かしたとき手足を振るようにしてほしい」→
  *    VRMSystem.renderSnapshotSet/tintSnapshotSetの戻り値がidle/walkA/walkB
  *    の3ポーズを持つ入れ子構造になったこと、CubeRenderer.jsが
@@ -36,37 +40,50 @@ function check(label, condition) {
   }
 }
 
-console.log('== 1. 壊せないブロックのチェッカーボード配置(Stage.js) ==');
+console.log('== 1. 壊せないブロックの配置(Stage.js) ==');
 {
   const { Stage, buildStartCandidates } = await import('./src/objects/Stage.js');
   const { BLOCK_TYPES } = await import('./src/constants/GameConstants.js');
 
   const stage = new Stage(11, 11);
   stage.generate(1);
+  const starts = new Set(stage.getStartPositions().map((p) => `${p.col},${p.row}`));
 
-  let pillarCount = 0;
-  let interiorCount = 0;
-  for (let row = 1; row < 10; row++) {
-    for (let col = 1; col < 10; col++) {
-      interiorCount++;
-      if ((col + row) % 2 === 0) pillarCount++;
-    }
-  }
   check(
-    '内側マスのうち(col+row)%2===0のマスは全て壊せないブロック(HARD)になっている(開始地点を除く)',
+    '全マス(外周含む)について、柱(col・rowが共に偶数)のマスだけがHARDになっている(開始地点を除く)',
     (() => {
-      const starts = new Set(buildStartCandidates(11, 11).map((p) => `${p.col},${p.row}`));
-      for (let row = 1; row < 10; row++) {
-        for (let col = 1; col < 10; col++) {
-          if ((col + row) % 2 !== 0) continue;
+      for (let row = 0; row < 11; row++) {
+        for (let col = 0; col < 11; col++) {
           if (starts.has(`${col},${row}`)) continue; // 開始地点は安全地帯化で強制的にEMPTYになる
-          if (stage.getBlockType(col, row) !== BLOCK_TYPES.HARD) return false;
+          const shouldBePillar = col % 2 === 0 && row % 2 === 0;
+          const isHard = stage.getBlockType(col, row) === BLOCK_TYPES.HARD;
+          if (shouldBePillar !== isHard) return false;
         }
       }
       return true;
     })()
   );
-  check('内側マスのうちおよそ半分がチェッカーボードの黒マス(柱候補)になっている', pillarCount > 0 && pillarCount < interiorCount);
+
+  check(
+    '柱同士は前後左右斜め(8方向)いずれにも隣接しない(必ず1マス以上の隙間がある)',
+    (() => {
+      for (let row = 0; row < 11; row++) {
+        for (let col = 0; col < 11; col++) {
+          if (!(col % 2 === 0 && row % 2 === 0)) continue;
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              if (dr === 0 && dc === 0) continue;
+              const nr = row + dr;
+              const nc = col + dc;
+              if (nr < 0 || nr >= 11 || nc < 0 || nc >= 11) continue;
+              if (nc % 2 === 0 && nr % 2 === 0) return false;
+            }
+          }
+        }
+      }
+      return true;
+    })()
+  );
 
   check('実際に使われた開始地点は(柱パターンに関わらず)必ずEMPTYになっている', (() => {
     return stage.getStartPositions().every((p) => stage.getBlockType(p.col, p.row) === BLOCK_TYPES.EMPTY);
@@ -80,9 +97,14 @@ console.log('== 1. 壊せないブロックのチェッカーボード配置(Sta
     });
   })());
 
-  check('外周は従来通りHARD(壊せない壁)のまま', (() => {
-    return stage.getBlockType(0, 0) === BLOCK_TYPES.HARD && stage.getBlockType(10, 5) === BLOCK_TYPES.HARD;
-  })());
+  check(
+    '端(外周)も内側と同じ柱判定ルールに従う(四隅(0,0)等はcol・rowが共に偶数=柱なので常にHARD)',
+    stage.getBlockType(0, 0) === BLOCK_TYPES.HARD && stage.getBlockType(10, 10) === BLOCK_TYPES.HARD
+  );
+  check(
+    '外周でも柱でない座標(奇数側)はHARDに固定されない(内側と同じくランダムなEMPTY/SOFT/ITEMになりうる)',
+    stage.getBlockType(1, 0) !== BLOCK_TYPES.HARD
+  );
 }
 
 console.log('\n== 2. VRM歩行ポーズ(手足の振り)対応 ==');

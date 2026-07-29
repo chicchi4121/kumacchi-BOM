@@ -12,19 +12,20 @@
  * 現状のスコープ（v1）:
  * - 各面は独立したミニマップとして生成する。各面の中央を、その面に
  *   割り当てられたプレイヤー1人分の安全地帯として確保する。
- * - 面の外周(perimeter、四隅を含む)はStage.generate()の既定ではHARD
- *   (壊せない壁)だが、生成後に全周を壊せるブロック(SOFT)として開放する
- *   (_openFaceWalls)。これにより、四隅に限らず横壁(辺の途中)のどこを
- *   壊しても(または👻取得済みならそのまま)面の端まで到達して隣接する
- *   面へ渡れる（「各面の4つ角からしか隣の面へ移動できない」という以前の
- *   制限を撤廃し、辺のどこからでも壊せるブロックを介して面をまたげる
- *   ようにする要望への対応）。
+ * - 面の外周(perimeter、四隅を含む)は、2026-07の再修正で「端も全て他の
+ *   マスと一緒にしてほしい」という要望に対応し、Stage.generate()内の
+ *   通常の柱判定・ランダム配置ロジック(_decideBlockType)にそのまま従う
+ *   ようにした(以前はCubeStage側で外周を強制的に全て壊せるブロックへ
+ *   上書きしていたが、その処理(_openFaceWalls)は撤廃した)。柱(HARD)は
+ *   col・rowが共に偶数のマスのみなので、外周のおよそ半分は柱のまま残り、
+ *   残り半分は内側と同様にランダムに空白/壊せるブロック/アイテムになる。
+ *   面をまたぐには、この「壊せる/空白になった外周マス」を経由する。
  * - 爆風・爆弾の誘爆は面をまたいで伝播しない（爆風の計算はExplosion.jsが
  *   各面のStageに対して行うため、自然と面内で完結する）。
  * - プレイヤーの移動のみが面をまたぐ（resolveMove）。
  * ------------------------------------------------------------
  */
-import { CUBE_FACE_NAMES, CUBE_FACE_COLS, CUBE_FACE_ROWS, MAX_PLAYERS, BLOCK_TYPES } from '../constants/GameConstants.js';
+import { CUBE_FACE_NAMES, CUBE_FACE_COLS, CUBE_FACE_ROWS, MAX_PLAYERS } from '../constants/GameConstants.js';
 import { CROSSING_TABLE } from '../constants/CubeTopology.js';
 import { Stage, buildStartCandidates } from './Stage.js';
 
@@ -91,9 +92,11 @@ export class CubeStage {
 
     for (const name of CUBE_FACE_NAMES) {
       const stage = this.faces[name];
+      // 「端も全て他のマスと一緒にして」への対応: 外周を特別扱いせず、
+      // Stage.generate()の通常ロジック(柱判定・ランダム配置)だけで
+      // 面全体(外周含む)を生成する(以前あった_openFaceWallsによる
+      // 外周の強制開放は撤廃)。
       stage.generate(1);
-      // 面の外周(横壁含む)を壊せるブロックとして開放する(下記_openFaceWalls参照)。
-      this._openFaceWalls(stage);
     }
 
     const count = Math.max(1, Math.min(MAX_PLAYERS, playerCount, CUBE_FACE_NAMES.length));
@@ -142,37 +145,6 @@ export class CubeStage {
 
     this.startPositions = positions;
     return this.faces;
-  }
-
-  /**
-   * 面の外周(perimeter、四隅と横壁の両方を含む)を壊せるブロック(SOFT)
-   * として開放する。
-   *
-   * Stage.generate()は面の外周を常にHARD(壊せない壁)として生成するため、
-   * このままでは面の端のマスに一度も立てず、resolveMove()が用意している
-   * 「面の端を超えると隣接する面へ渡る」処理が実際には一度も発動しない
-   * (=見た目は立方体でも、実際には他の面へ移動する手段が無い)という
-   * 状態になってしまう。
-   *
-   * 「各面の4つ角からしか隣の面へ移動できないのではなく、横壁に壊せる
-   * ブロックを設置してほしい」という要望に対応し、以前は四隅とその
-   * approachマス(計8マス)のみを開放していたが、外周全体(横壁含む)を
-   * 開放するよう変更した。四隅のマスは(その両隣も外周であるため)従来
-   * 通り2方向どちらへも面をまたげ、横壁の途中のマスは1方向のみへ面を
-   * またげる(_crossDirsForCell参照)。外周全体が壊せるブロックになった
-   * ことで、四隅への「歩いて近づくための2マス分の通路」を個別に用意する
-   * 必要も無くなった(隣接する横壁マスも同様に壊せるブロックとして開放
-   * されるため、自然に通り道になる)。
-   */
-  _openFaceWalls(stage) {
-    for (let row = 0; row < stage.rows; row++) {
-      for (let col = 0; col < stage.cols; col++) {
-        if (!this._isPerimeterCell(col, row)) continue;
-        if (stage.getBlockType(col, row) === BLOCK_TYPES.HARD) {
-          stage.setBlockType(col, row, BLOCK_TYPES.SOFT);
-        }
-      }
-    }
   }
 
   /**
