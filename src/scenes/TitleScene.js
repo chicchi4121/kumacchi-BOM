@@ -26,9 +26,21 @@ import { computeUIScale, scaledFontPx } from '../utils/ResponsiveUI.js';
 
 const VRM_FILE_INPUT_ID = 'kumacchi-vrm-file-input';
 
+// 「トップ画面.pngをトップ画面にしてほしい」への対応: 従来はテキストのみ
+// だったタイトルを、アップロードされたロゴ画像(くまっちBOM!のキャラ
+// イラスト付きロゴ)に差し替える。画像自体に既にタイトル文字が描かれて
+// いるため、旧来のテキストタイトルは削除し、この画像をその代わりとして
+// 表示する。
+const TITLE_LOGO_KEY = 'titleLogo';
+const TITLE_LOGO_PATH = 'assets/images/title/title_logo.png';
+
 export class TitleScene extends Phaser.Scene {
   constructor() {
     super({ key: SCENE_KEYS.TITLE });
+  }
+
+  preload() {
+    this.load.image(TITLE_LOGO_KEY, TITLE_LOGO_PATH);
   }
 
   create() {
@@ -43,37 +55,51 @@ export class TitleScene extends Phaser.Scene {
     this._uiScale = computeUIScale(this.scale.width, this.scale.height);
     const s = this._uiScale;
 
-    this.add
-      .text(centerX, 70 * s, 'くまっちボム！', { fontSize: scaledFontPx(40, s), color: '#ffffff' })
-      .setOrigin(0.5);
+    // ロゴ画像(正方形)を画面上部中央に表示する。画面幅に対して大きくなり
+    // すぎないよう、幅の上限も設ける(スマホの縦長画面での見切れ防止)。
+    const logoCenterY = 110 * s;
+    const maxLogoDisplayWidth = Math.min(260 * s, this.scale.width * 0.82);
+    if (this.textures.exists(TITLE_LOGO_KEY)) {
+      const logo = this.add.image(centerX, logoCenterY, TITLE_LOGO_KEY).setOrigin(0.5);
+      const scaleFactor = maxLogoDisplayWidth / logo.width;
+      logo.setScale(scaleFactor);
+    } else {
+      // 画像の読み込みに失敗した場合は、従来のテキストタイトルにフォールバックする。
+      this.add.text(centerX, logoCenterY, 'くまっちボム！', { fontSize: scaledFontPx(40, s), color: '#ffffff' }).setOrigin(0.5);
+    }
 
-    this._createMenuButton(centerX, 155 * s, 'ゲーム開始', () => {
+    // ロゴ画像はテキストタイトルより縦に大きいため、以降のメニュー項目は
+    // ロゴの下に十分な余白を空けて配置する(以前のテキストタイトル時の
+    // 各項目位置に、ロゴ分の追加オフセットを加えたもの)。
+    const menuTop = 215 * s;
+
+    this._createMenuButton(centerX, menuTop, 'ゲーム開始', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.LOBBY);
     });
 
-    this._createMenuButton(centerX, 210 * s, 'オンライン対戦', () => {
+    this._createMenuButton(centerX, menuTop + 55 * s, 'オンライン対戦', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.ONLINE_LOBBY);
     });
 
-    this._createMenuButton(centerX, 265 * s, 'ランキング', () => {
+    this._createMenuButton(centerX, menuTop + 110 * s, 'ランキング', () => {
       soundSystem.playSE('button');
       this.scene.start(SCENE_KEYS.RANKING);
     });
 
-    this._createMenuButton(centerX, 320 * s, '設定', () => {
+    this._createMenuButton(centerX, menuTop + 165 * s, '設定', () => {
       soundSystem.playSE('button');
       this._toggleSettingsPanel();
     });
 
-    this._createMenuButton(centerX, 375 * s, 'VRM変更', () => {
+    this._createMenuButton(centerX, menuTop + 220 * s, 'VRM変更', () => {
       soundSystem.playSE('button');
       this._openVrmFilePicker();
     });
 
     this.vrmStatusText = this.add
-      .text(centerX, 408 * s, this._getVrmStatusLabel(), { fontSize: scaledFontPx(13, s), color: '#88ddaa' })
+      .text(centerX, menuTop + 253 * s, this._getVrmStatusLabel(), { fontSize: scaledFontPx(13, s), color: '#88ddaa' })
       .setOrigin(0.5);
 
     this.add
@@ -83,7 +109,7 @@ export class TitleScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    this._createSettingsPanel(centerX, 440 * s);
+    this._createSettingsPanel(centerX, menuTop + 285 * s);
   }
 
   _getVrmStatusLabel() {

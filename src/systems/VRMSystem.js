@@ -18,6 +18,16 @@
  *   本クラスのAPI(renderSnapshotSet)は変えずに内部実装だけ差し替え
  *   られるようにしてある。
  *
+ * 【2026-07更新】「VRMで入れたキャラを動かしたとき手足を振るようにして
+ * ほしい」への対応: 各方向につき静止ポーズ(idle)1枚だけでなく、腕・脚の
+ * ボーンを前後逆方向に振った2種類の歩行ポーズ(walkA/walkB)も追加で
+ * レンダリングするようにした。renderSnapshotSet()の戻り値は
+ * { down: {idle, walkA, walkB}, up: {...}, left: {...}, right: {...} }
+ * という形になり、呼び出し側(CubeRenderer)はPlayer.isMoving中、
+ * walkA/walkBを交互に表示することで「歩くときに手足が振れる」ように
+ * 見せる（ライブなボーンアニメーションではなく、静止画の差し替えである
+ * 点は従来のスナップショット方式を踏襲している）。
+ *
  * Three.js / @pixiv/three-vrm はビルドステップを増やさないよう
  * index.htmlのimport map経由でCDNからロードする（ベア指定子でdynamic
  * import）。Node環境（ユニットテスト）ではこれらのモジュールは決して
@@ -73,17 +83,19 @@ export class VRMSystem {
 
   /**
    * VRMファイルの中身(ArrayBuffer)から、正面(down)・背面(up)・左(left)・
-   * 右(right)の4方向の静止画スナップショットを描画し、
-   * { down, up, left, right } (各値はHTMLCanvasElement)として返す。
-   * キー名はPlayer.facing('up'|'down'|'left'|'right')にそのまま対応する
-   * （'down'=画面手前=正面、'up'=画面奥=背面、という向き）。
+   * 右(right)の4方向それぞれについて、静止ポーズ(idle)と歩行ポーズ2種
+   * (walkA/walkB。腕・脚を前後逆に振ったポーズ)を描画し、
+   * { down: {idle,walkA,walkB}, up: {...}, left: {...}, right: {...} }
+   * (各値はHTMLCanvasElement)として返す。キー名はPlayer.facing
+   * ('up'|'down'|'left'|'right')にそのまま対応する（'down'=画面手前=正面、
+   * 'up'=画面奥=背面、という向き）。
    * 失敗した場合は例外を投げる（呼び出し側でcatchし、デフォルト見た目に
    * フォールバックすること）。
    *
    * @param {ArrayBuffer} arrayBuffer
    * @param {number} size - 出力canvasの一辺(px)
    * @param {(stage: string) => void} [onProgress] - 進行状況を通知するコールバック
-   * @returns {Promise<{down: HTMLCanvasElement, up: HTMLCanvasElement, left: HTMLCanvasElement, right: HTMLCanvasElement}>}
+   * @returns {Promise<{down: {idle:HTMLCanvasElement, walkA:HTMLCanvasElement, walkB:HTMLCanvasElement}, up: object, left: object, right: object}>}
    */
   async renderSnapshotSet(arrayBuffer, size = 128, onProgress = () => {}) {
     onProgress('loading-modules');
@@ -161,13 +173,55 @@ export class VRMSystem {
       right: -Math.PI / 2,
     };
 
-    const result = {};
-    for (const [facing, rotY] of Object.entries(ROTATIONS)) {
-      vrm.scene.rotation.y = rotY;
-      vrm.update(0);
+    // 「手足を振るようにしてほしい」への対応: 歩行中に見える2つの逆位相
+    // ポーズ(walkA/walkB)を作るため、肩(上腕)・股関節(上脚)のボーンを
+    // 前後逆方向に振る。左右対称に振ることで「歩いている」ように見せる
+    // (実際のボーンアニメーションではなく、静止スナップショットを2枚
+    // 交互に差し替えるだけの簡易的な歩行表現)。ボーンが取得できない
+    // VRMモデル(人型ボーン構成が無い等)の場合は、posingを諦めてidleと
+    // 同じ絵をwalkA/walkBにも使う(例外にはしない=フォールバック)。
+    const humanoid = vrm.humanoid;
+    const WALK_SWING_RAD = 0.5; // 腕の振り幅
+    const WALK_LEG_SWING_RAD = 0.4; // 脚の振り幅
+    const boneNames = ['leftUpperArm', 'rightUpperArm', 'leftUpperLeg', 'rightUpperLeg'];
+    const bones = {};
+    if (humanoid) {
+      for (const name of boneNames) {
+        bones[name] = humanoid.getNormalizedBoneNode(name) ?? null;
+      }
+    }
+    const hasWalkBones = Object.values(bones).some((b) => b != null);
+
+    /** 腕・脚ボーンの回転(X軸)を一括設定する。boneOffsets未指定なら全て0(ニュートラル姿勢)に戻す */
+    const applyWalkPose = (boneOffsets = null) => {
+      if (!hasWalkBones) return;
+      if (bones.leftUpperArm) bones.leftUpperArm.rotation.x = boneOffsets?.leftUpperArm ?? 0;
+      if (bones.rightUpperArm) bones.rightUpperArm.rotation.x = boneOffsets?.rightUpperArm ?? 0;
+      if (bones.leftUpperLeg) bones.leftUpperLeg.rotation.x = boneOffsets?.leftUpperLeg ?? 0;
+      if (bones.rightUpperLeg) bones.rightUpperLeg.rotation.x = boneOffsets?.rightUpperLeg ?? 0;
+    };
+
+    // 右腕・左脚が前に出るタイミングと、左腕・右脚が前に出るタイミングの
+    // 2ポーズ（人間の自然な歩行と同じく、対角の腕・脚が同時に振れる）。
+    const WALK_POSES = {
+      idle: null,
+      walkA: {
+        leftUpperArm: -WALK_SWING_RAD,
+        rightUpperArm: WALK_SWING_RAD,
+        leftUpperLeg: WALK_LEG_SWING_RAD,
+        rightUpperLeg: -WALK_LEG_SWING_RAD,
+      },
+      walkB: {
+        leftUpperArm: WALK_SWING_RAD,
+        rightUpperArm: -WALK_SWING_RAD,
+        leftUpperLeg: -WALK_LEG_SWING_RAD,
+        rightUpperLeg: WALK_LEG_SWING_RAD,
+      },
+    };
+
+    const renderToCanvas = () => {
       renderer.render(scene, camera);
       const glCanvas = renderer.domElement;
-
       // 重要: glCanvas(renderer.domElement)は'webgl'コンテキストが紐付いた
       // canvasであり、一度webglコンテキストを取得したcanvasは二度と
       // getContext('2d')を取得できない（nullが返る）。Phaser.Textures.addCanvas()
@@ -179,7 +233,22 @@ export class VRMSystem {
       canvas2d.width = size;
       canvas2d.height = size;
       canvas2d.getContext('2d').drawImage(glCanvas, 0, 0, size, size);
-      result[facing] = canvas2d;
+      return canvas2d;
+    };
+
+    const result = {};
+    for (const [facing, rotY] of Object.entries(ROTATIONS)) {
+      vrm.scene.rotation.y = rotY;
+
+      const poses = {};
+      for (const [poseName, boneOffsets] of Object.entries(WALK_POSES)) {
+        applyWalkPose(boneOffsets);
+        vrm.update(0);
+        poses[poseName] = renderToCanvas();
+      }
+      applyWalkPose(null); // 次の方向のレンダリングに影響しないよう、必ずニュートラル姿勢へ戻す
+
+      result[facing] = poses;
       onProgress(`rendered-${facing}`);
     }
 
@@ -202,20 +271,28 @@ export class VRMSystem {
    * レンダリングした結果を2D canvas上で色調補正する」という軽量な方式を
    * 採用している（PLAYER_COLOR_FILTERS参照）。
    *
-   * @param {{down:HTMLCanvasElement, up:HTMLCanvasElement, left:HTMLCanvasElement, right:HTMLCanvasElement}} snapshotSet
+   * @param {{down:{idle,walkA,walkB}, up:object, left:object, right:object}} snapshotSet
    * @param {string} filterCss - 'none'なら元のcanvasをそのまま複製する
-   * @returns {{down:HTMLCanvasElement, up:HTMLCanvasElement, left:HTMLCanvasElement, right:HTMLCanvasElement}}
+   * @returns {{down:{idle,walkA,walkB}, up:object, left:object, right:object}}
    */
   tintSnapshotSet(snapshotSet, filterCss = 'none') {
-    const result = {};
-    for (const [facing, srcCanvas] of Object.entries(snapshotSet)) {
+    const tintCanvas = (srcCanvas) => {
       const tinted = document.createElement('canvas');
       tinted.width = srcCanvas.width;
       tinted.height = srcCanvas.height;
       const ctx = tinted.getContext('2d');
       ctx.filter = filterCss || 'none';
       ctx.drawImage(srcCanvas, 0, 0);
-      result[facing] = tinted;
+      return tinted;
+    };
+
+    const result = {};
+    for (const [facing, poses] of Object.entries(snapshotSet)) {
+      const tintedPoses = {};
+      for (const [poseName, srcCanvas] of Object.entries(poses)) {
+        tintedPoses[poseName] = tintCanvas(srcCanvas);
+      }
+      result[facing] = tintedPoses;
     }
     return result;
   }

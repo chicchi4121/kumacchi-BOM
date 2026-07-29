@@ -145,14 +145,53 @@ console.log('\n== 4. BattleSystemの勝敗判定・順位確定 ==');
     check('死亡したプレイヤーは2位', battle.finalRanks.get(2) === 2);
   }
 
-  // 4-2. 時間切れ時は残機→撃破数の順で勝者を決める
+  // 4-2. 時間切れ時は即座に終わらず、サドンデス(suddenDeath)状態になるだけ
+  // (「制限時間を過ぎたら終わりではなく、残り一人になるまで爆弾が沢山
+  // 降ってくるようにしてほしい」への対応。実際に爆弾を降らせる処理は
+  // GameScene側が担当するため、BattleSystem自体はフラグを立てるのみ)
   {
     const p1 = makeFakePlayer(1, 2, 5);
     const p2 = makeFakePlayer(2, 2, 1);
     const p3 = makeFakePlayer(3, 1, 99);
     const battle = new BattleSystem([p1, p2, p3], { timeLimitMs: 100 });
     battle.update(200); // 時間切れ
-    check('残機が同点の場合は撃破数が多い方が勝者', battle.winner === p1);
+    check('時間切れになってもisOverにはならない(サドンデスへ移行するだけ)', battle.isOver === false);
+    check('時間切れでsuddenDeadがtrueになる', battle.suddenDeath === true);
+    check('時間切れ直後はまだ勝者が確定していない', battle.winner === null);
+
+    // サドンデス中に生存者が1人になれば、従来通り即座に勝者が確定する。
+    p2.isAlive = false;
+    p3.isAlive = false;
+    battle.notifyPlayerDied(p2);
+    battle.notifyPlayerDied(p3);
+    battle.update(16);
+    check('サドンデス中でも生存者が1人になれば勝者が確定する', battle.isOver === true && battle.winner === p1);
+  }
+
+  // 4-2b. 「プレイヤーが負けたら終わりにしてほしい」: humanPlayersを渡すと、
+  // 人間プレイヤーが全滅した時点でAI同士の決着を待たずに即座に終わる
+  {
+    const human = makeFakePlayer(1, 0, 0);
+    human.isAlive = false;
+    const ai1 = makeFakePlayer(2, 2, 5);
+    const ai2 = makeFakePlayer(3, 1, 1);
+    const battle = new BattleSystem([human, ai1, ai2], { timeLimitMs: 180000, humanPlayers: [human] });
+    battle.notifyPlayerDied(human);
+    battle.update(16);
+    check('人間プレイヤーが全滅した時点でisOverになる(AIが2人生存中でも)', battle.isOver === true);
+    check('生存中のAIの中から残機の多い方が勝者になる', battle.winner === ai1);
+  }
+
+  // 4-2c. humanPlayersを渡さない場合は、人間全滅による即終了判定を行わない(後方互換)
+  {
+    const p1 = makeFakePlayer(1, 0, 0);
+    p1.isAlive = false;
+    const p2 = makeFakePlayer(2, 2, 0);
+    const p3 = makeFakePlayer(3, 1, 0);
+    const battle = new BattleSystem([p1, p2, p3], { timeLimitMs: 180000 });
+    battle.notifyPlayerDied(p1);
+    battle.update(16);
+    check('humanPlayers未指定なら、1人死亡しただけではisOverにならない(2人生存中のため)', battle.isOver === false);
   }
 
   // 4-3. 生存中のプレイヤーはgetLiveRank()がnullを返す（複数生存時）

@@ -61,10 +61,20 @@ export class Bomb {
 
   _createSprite() {
     const { x, y } = Collision.toPixel(this.col, this.row);
-    // TODO(Phase2): 画像アセット(assets/images/bomb)差し替え。現状はくまの顔を模した簡易描画。
-    this.sprite = this.scene.add.circle(x, y, TILE_SIZE * 0.32, 0x3b2a20);
+    // 「爆弾.pngを爆弾にしてほしい」への対応: GameScene.preload()で読み込んだ
+    // 'bombIcon'テクスチャがあればそれを使い、無ければ(読込前・読込失敗時)
+    // 従来の単色円にフォールバックする。
+    // 【注記】実際のゲーム画面は常にrender3D=trueのため3D側(CubeRenderer)が
+    // 描画を担っており、このメソッド自体は現状呼び出されない
+    // (render3D=falseの将来的な2Dモード向けの保険としてのみ存在する)。
+    if (this.scene.textures?.exists?.('bombIcon')) {
+      this.sprite = this.scene.add.image(x, y, 'bombIcon');
+      this.sprite.setDisplaySize(TILE_SIZE * 0.72, TILE_SIZE * 0.72);
+    } else {
+      this.sprite = this.scene.add.circle(x, y, TILE_SIZE * 0.32, 0x3b2a20);
+      this.sprite.setStrokeStyle(3, 0x1a1208, 1);
+    }
     this.sprite.setDepth(DEPTH.BOMB);
-    this.sprite.setStrokeStyle(3, 0x1a1208, 1);
 
     // 膨張・収縮アニメーションで「今にも爆発しそう」な演出を行う。
     this.scene.tweens.add({

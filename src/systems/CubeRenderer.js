@@ -52,6 +52,12 @@ const BLOCK_THICKNESS = 0.32;
 const ENTITY_OUTWARD = 0.4; // プレイヤー・アイテム・爆弾が面から浮く距離
 const CELL_SIZE = (2 * CUBE_RADIUS) / CUBE_FACE_COLS; // 1マスのワールド単位サイズ(全面同サイズ前提)
 
+// 「爆弾.pngを爆弾にしてほしい」への対応: 以前は単色球体(SphereGeometry)で
+// 描画していた爆弾を、アップロードされた画像(くまの顔を模した爆弾)を貼った
+// 平面(PlaneGeometry)に差し替える。Item(アイテム)と同じく面に沿って正対する
+// 平面をitem用の_getFaceQuaternion(face)で向かせる。
+const BOMB_TEXTURE_PATH = 'assets/images/bomb/bomb.png';
+
 // 【固定カメラ設定】以前は面ごとにカメラの位置を毎回計算して飛ばしていたが、
 // 今はカメラは常にこの1箇所に固定し、立方体側を回転させる。
 // CAMERA_ELEVATION_RAD: 0度=水平(真横から), 90度=真上から見下ろす。50度前後で
@@ -115,6 +121,19 @@ export class CubeRenderer {
     const THREE = await import(/* webpackIgnore: true */ 'three');
     this._THREE = THREE;
     this.stage = stage;
+
+    // 爆弾画像(bomb.png)を読み込む。失敗した場合(ネットワーク不調等)は
+    // addBomb()側で従来の単色球体描画にフォールバックする(開発ルール8と
+    // 同様の考え方: 画像アセットの有無がゲームの続行自体に影響しないこと)。
+    this._bombTexture = null;
+    try {
+      this._bombTexture = await new THREE.TextureLoader().loadAsync(BOMB_TEXTURE_PATH);
+    } catch (e) {
+      console.error(
+        '[CubeRenderer] 爆弾画像(bomb.png)の読み込みに失敗しました。従来の球体描画にフォールバックします。',
+        e
+      );
+    }
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -301,12 +320,16 @@ export class CubeRenderer {
    * GameScene._loadAllVrmAppearances()から、プレイヤー1(操作中の自分)には
    * 自分のカスタム/デフォルトVRMを、それ以外の全員(AI・2人目以降の人間
    * プレイヤー)には同梱VRMの色違いテクスチャを設定するために使う。
+   *
+   * textureSetは { down: {idle,walkA,walkB}, up: {...}, left: {...}, right: {...} }
+   * という入れ子構造(VRMSystemの「手足を振るようにしてほしい」対応で
+   * ポーズ違いのテクスチャを複数持つようになった)。
    */
   setPlayerTextures(playerId, textureSet) {
     this._playerTextures.set(playerId, textureSet);
     const mesh = this._playerMeshes.get(playerId);
     if (mesh) {
-      mesh.material.map = textureSet.down;
+      mesh.material.map = textureSet.down?.idle ?? null;
       mesh.material.transparent = true;
       mesh.material.needsUpdate = true;
     }
@@ -318,7 +341,11 @@ export class CubeRenderer {
     let material;
     const textureSet = this._playerTextures.get(player.playerId);
     if (textureSet) {
-      material = new THREE.MeshBasicMaterial({ map: textureSet.down, transparent: true, side: THREE.DoubleSide });
+      material = new THREE.MeshBasicMaterial({
+        map: textureSet.down?.idle ?? null,
+        transparent: true,
+        side: THREE.DoubleSide,
+      });
     } else {
       const colorName = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
       material = new THREE.MeshBasicMaterial({ color: PLAYER_COLOR_HEX[colorName] ?? 0xffffff, side: THREE.DoubleSide });
@@ -340,6 +367,12 @@ export class CubeRenderer {
   /**
    * 全プレイヤーの見た目を現在の状態(face/col/row/facing/isAlive)に同期する。
    * 移動中はPlayer.getMoveProgress()を使って前の位置から現在地へ補間する。
+   *
+   * 「VRMで入れたキャラを動かしたとき手足を振るようにしてほしい」への対応:
+   * player.isMoving中は、1マス移動アニメーションの進捗(progress)の前半/
+   * 後半でwalkA/walkBのテクスチャを交互に切り替え、手足が振れているように
+   * 見せる（静止中はidleテクスチャに戻す）。テクスチャセットが未設定の
+   * プレイヤー(VRM読込前・失敗時)は色付き四角のままなので何もしない。
    * @param {Array<Player>} players
    * @param {number} now
    */
@@ -355,16 +388,19 @@ export class CubeRenderer {
         this._playerMeshes.set(player.playerId, mesh);
       }
 
+      const progress = player.getMoveProgress(now);
+
       const textureSet = this._playerTextures.get(player.playerId);
       if (textureSet) {
-        const tex = textureSet[player.facing] ?? textureSet.down;
-        if (mesh.material.map !== tex) {
+        const poses = textureSet[player.facing] ?? textureSet.down;
+        const poseName = player.isMoving ? (progress < 0.5 ? 'walkA' : 'walkB') : 'idle';
+        const tex = poses?.[poseName] ?? poses?.idle ?? textureSet.down?.idle;
+        if (tex && mesh.material.map !== tex) {
           mesh.material.map = tex;
           mesh.material.needsUpdate = true;
         }
       }
 
-      const progress = player.getMoveProgress(now);
       const [fx, fy, fz] = cellWorldPos(player._prevFace, player._prevCol, player._prevRow, CUBE_FACE_COLS, CUBE_FACE_ROWS, ENTITY_OUTWARD);
       const [tx, ty, tz] = cellWorldPos(player.face, player.col, player.row, CUBE_FACE_COLS, CUBE_FACE_ROWS, ENTITY_OUTWARD);
       mesh.position.set(fx + (tx - fx) * progress, fy + (ty - fy) * progress, fz + (tz - fz) * progress);
@@ -374,12 +410,23 @@ export class CubeRenderer {
 
   addBomb(bomb) {
     const THREE = this._THREE;
-    const geom = new THREE.SphereGeometry(CELL_SIZE * 0.28, 12, 10);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x3b2a20 });
-    const mesh = new THREE.Mesh(geom, mat);
+    let mesh;
+    if (this._bombTexture) {
+      // 「爆弾.pngを爆弾にしてほしい」への対応: Item(アイテム)と同様、
+      // 面に正対する平面に画像を貼って表示する。
+      const geom = new THREE.PlaneGeometry(CELL_SIZE * 0.62, CELL_SIZE * 0.62);
+      const mat = new THREE.MeshBasicMaterial({ map: this._bombTexture, transparent: true, side: THREE.DoubleSide });
+      mesh = new THREE.Mesh(geom, mat);
+      mesh.quaternion.copy(this._getFaceQuaternion(bomb.face));
+    } else {
+      // 画像読み込みに失敗した場合の従来フォールバック(単色球体)。
+      const geom = new THREE.SphereGeometry(CELL_SIZE * 0.28, 12, 10);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x3b2a20 });
+      mesh = new THREE.Mesh(geom, mat);
+      mesh.castShadow = true;
+    }
     const [x, y, z] = cellWorldPos(bomb.face, bomb.col, bomb.row, CUBE_FACE_COLS, CUBE_FACE_ROWS, ENTITY_OUTWARD * 0.7);
     mesh.position.set(x, y, z);
-    mesh.castShadow = true;
     this._cubeRoot.add(mesh);
     this._bombMeshes.set(bomb, mesh);
   }

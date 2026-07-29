@@ -101,6 +101,17 @@ export const BLAST_INITIAL_RANGE = 1; // 初期爆風範囲（マス数）
 export const BLAST_MAX_RANGE = 10; // 最大爆風範囲
 export const EXPLOSION_LIFETIME_MS = 400; // 爆風エフェクトの表示時間
 
+// --- サドンデス設定 ---------------------------------------------------
+// 「制限時間を過ぎたら終わりではなく、制限時間が過ぎて0になったら残り
+// 一人になるまで爆弾が沢山降ってくるようにしてほしい」への対応。
+// BattleSystem.suddenDeathがtrueになった(制限時間到達)後、GameScene側が
+// 一定間隔で、生存者がいる面それぞれにランダムな位置から「環境爆弾」
+// (誰の所有物でもない爆弾)を降らせ続ける(GameScene._spawnSuddenDeathBombs
+// 参照)。
+export const SUDDEN_DEATH_BOMB_INTERVAL_MS = 1200; // 爆弾を降らせる間隔
+export const SUDDEN_DEATH_BOMBS_PER_WAVE = 2; // 1回に、生存者がいる面ごとに降らせる爆弾の数
+export const SUDDEN_DEATH_BLAST_RANGE = 3; // 環境爆弾の爆風範囲(通常の初期爆風より広めにして決着を早める)
+
 // --- ブロック設定 ---------------------------------------------------
 export const BLOCK_TYPES = Object.freeze({
   EMPTY: 'empty',

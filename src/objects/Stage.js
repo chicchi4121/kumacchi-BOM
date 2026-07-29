@@ -96,13 +96,22 @@ export class Stage {
     return this.grid;
   }
 
-  /** 1マスのブロック種別を決定する（迷路の基本パターン＋ランダム配置） */
+  /**
+   * 1マスのブロック種別を決定する（迷路の基本パターン＋ランダム配置）。
+   *
+   * 「壊せないブロックを1マスあけて全マスにおいてほしい」への対応:
+   * 以前は偶数列・偶数行の"交点"だけを柱にしていたため(伝統的な
+   * ボンバーマン配置)、壊せない柱は盤面全体のうちごく一部(11x11なら
+   * 内側9x9のうち16マスのみ)にしか無かった。今回、盤面全体(全マス)に
+   * わたって1マスおきに壊せないブロックが現れるチェッカーボード
+   * (col+row)%2===0)パターンに変更し、より密な壊せない構造にした。
+   */
   _decideBlockType(col, row, cols, rows) {
     const isBorder = col === 0 || row === 0 || col === cols - 1 || row === rows - 1;
     if (isBorder) return BLOCK_TYPES.HARD;
 
-    // 偶数列・偶数行の交点は柱として壊せないブロックを配置（伝統的なボンバーマン配置）
-    const isPillar = col % 2 === 0 && row % 2 === 0;
+    // チェッカーボード状(1マスおき)に柱として壊せないブロックを配置する。
+    const isPillar = (col + row) % 2 === 0;
     if (isPillar) return BLOCK_TYPES.HARD;
 
     // それ以外はランダムに「空白」「壊せるブロック」「アイテム入りブロック」を配置
@@ -111,16 +120,32 @@ export class Stage {
     return BLOCK_TYPES.SOFT;
   }
 
-  /** プレイヤー開始地点とその周辺(SAFE_ZONE_RADIUS)を必ず通行可能にする */
+  /**
+   * プレイヤー開始地点とその周辺(SAFE_ZONE_RADIUS)を必ず通行可能にする。
+   *
+   * 【重要】柱パターンをチェッカーボード((col+row)%2===0)に変更したことで、
+   * 開始地点そのものの座標が(たまたま)柱の条件に一致してしまう場合が
+   * ある(例: 面の中央(centerCol,centerRow)がチェッカーボードの黒マスに
+   * あたるケース)。周辺の安全地帯マスは従来通り柱・外周の構造を維持して
+   * 良いが、プレイヤーが実際に立つ開始地点そのもの(dRow=0,dCol=0)だけは、
+   * 柱・外周の判定に関わらず必ず空白にする(でないとプレイヤーが壁の中に
+   * 出現してしまう事故になる)。
+   */
   _clearSafeZone(col, row) {
     for (let dRow = -SAFE_ZONE_RADIUS; dRow <= SAFE_ZONE_RADIUS; dRow++) {
       for (let dCol = -SAFE_ZONE_RADIUS; dCol <= SAFE_ZONE_RADIUS; dCol++) {
         const c = col + dCol;
         const r = row + dRow;
         if (!Collision.inBounds(c, r, this.cols, this.rows)) continue;
+        const isStartCell = dRow === 0 && dCol === 0;
+        if (isStartCell) {
+          this.grid[r][c] = BLOCK_TYPES.EMPTY;
+          this.itemTypeByTile.delete(tileKey(c, r));
+          continue;
+        }
         // 外周(HARD境界)や柱(HARD)はそのまま維持し、それ以外は空白にする。
         const isBorder = c === 0 || r === 0 || c === this.cols - 1 || r === this.rows - 1;
-        const isPillar = c % 2 === 0 && r % 2 === 0;
+        const isPillar = (c + r) % 2 === 0;
         if (isBorder || isPillar) continue;
         this.grid[r][c] = BLOCK_TYPES.EMPTY;
         this.itemTypeByTile.delete(tileKey(c, r));

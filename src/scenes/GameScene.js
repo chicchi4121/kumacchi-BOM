@@ -38,9 +38,13 @@ import {
   NETWORK_STATE_BROADCAST_INTERVAL_MS,
   NETWORK_INPUT_SEND_INTERVAL_MS,
   NETWORK_INIT_REQUEST_RETRY_MS,
+  SUDDEN_DEATH_BOMB_INTERVAL_MS,
+  SUDDEN_DEATH_BOMBS_PER_WAVE,
+  SUDDEN_DEATH_BLAST_RANGE,
 } from '../constants/GameConstants.js';
 import { computeBattleLayout } from '../utils/ViewportLayout.js';
 import { computeTouchControlLayout, isTouchCapable } from '../utils/TouchControlLayout.js';
+import { random } from '../utils/Random.js';
 import { CubeStage } from '../objects/CubeStage.js';
 import { Player } from '../objects/Player.js';
 import { Bomb } from '../objects/Bomb.js';
@@ -113,6 +117,16 @@ export class GameScene extends Phaser.Scene {
     };
   }
 
+  /**
+   * 「爆弾.pngを爆弾にしてほしい」への対応。実際にプレイヤーの目に触れる
+   * のは3D(CubeRenderer/Three.js)側の描画だが、render3D=falseの場合の
+   * Phaser用フォールバック(Bomb._createSprite)でも同じ画像を使えるよう、
+   * ここでテクスチャキー'bombIcon'として読み込んでおく。
+   */
+  preload() {
+    this.load.image('bombIcon', 'assets/images/bomb/bomb.png');
+  }
+
   create() {
     // このシーンでは実際の見た目(ブロック/プレイヤー/爆弾/アイテム)を
     // CubeRenderer(Three.js)が描画するため、Bomb/Item側で独自にPhaser用の
@@ -149,7 +163,12 @@ export class GameScene extends Phaser.Scene {
       this.players.filter((p) => p.isAI),
       this.config.aiDifficulty
     );
-    this.battleSystem = new BattleSystem(this.players, { timeLimitMs: this.config.timeLimitMs });
+    this.battleSystem = new BattleSystem(this.players, {
+      timeLimitMs: this.config.timeLimitMs,
+      humanPlayers: this.humanPlayers,
+    });
+    // サドンデス(制限時間切れ後の爆弾降らせ)用の次回投下時刻管理。
+    this._nextSuddenDeathDropAt = 0;
 
     this._createHud();
     this._buildPlayerCards();
@@ -624,15 +643,30 @@ export class GameScene extends Phaser.Scene {
         return;
       }
 
-      if (primarySnapshotSet && this.humanPlayer?.isAlive) {
+      // snapshotSet: { down: {idle,walkA,walkB}, up: {...}, left: {...}, right: {...} }
+      // (VRMSystemの「手足を振るようにしてほしい」対応により、各方向が
+      // ポーズ違いの複数canvasを持つ入れ子構造になった)。ここではその構造を
+      // 保ったまま、canvas各枚をThree.jsテクスチャに変換するだけ。
+      const buildTextureSet = (snapshotSet) => {
         const textureSet = {};
-        for (const facing of Object.keys(primarySnapshotSet)) {
-          textureSet[facing] = this.cubeRenderer.createCanvasTexture(primarySnapshotSet[facing]);
+        for (const facing of Object.keys(snapshotSet)) {
+          const poses = snapshotSet[facing];
+          const poseTextures = {};
+          for (const poseName of Object.keys(poses)) {
+            poseTextures[poseName] = this.cubeRenderer.createCanvasTexture(poses[poseName]);
+          }
+          textureSet[facing] = poseTextures;
         }
-        this.cubeRenderer.setPlayerTextures(this.humanPlayer.playerId, textureSet);
+        return textureSet;
+      };
+
+      if (primarySnapshotSet && this.humanPlayer?.isAlive) {
+        this.cubeRenderer.setPlayerTextures(this.humanPlayer.playerId, buildTextureSet(primarySnapshotSet));
         // 「自分の画像アイコンも情報と一緒に表示してほしい」への対応:
-        // 右側パネルの自分のカードにも同じスナップショット(正面向き)を使う。
-        if (primarySnapshotSet.down) this._setPlayerCardIcon(this.humanPlayer.playerId, primarySnapshotSet.down);
+        // 右側パネルの自分のカードにも同じスナップショット(正面・静止ポーズ)を使う。
+        if (primarySnapshotSet.down?.idle) {
+          this._setPlayerCardIcon(this.humanPlayer.playerId, primarySnapshotSet.down.idle);
+        }
       }
 
       if (enemyBaseSnapshotSet) {
@@ -641,14 +675,10 @@ export class GameScene extends Phaser.Scene {
           const colorName = PLAYER_COLORS[player.colorIndex % PLAYER_COLORS.length];
           const filterCss = PLAYER_COLOR_FILTERS[colorName] ?? 'none';
           const tintedSet = vrmSystem.tintSnapshotSet(enemyBaseSnapshotSet, filterCss);
-          const textureSet = {};
-          for (const facing of Object.keys(tintedSet)) {
-            textureSet[facing] = this.cubeRenderer.createCanvasTexture(tintedSet[facing]);
-          }
-          this.cubeRenderer.setPlayerTextures(player.playerId, textureSet);
+          this.cubeRenderer.setPlayerTextures(player.playerId, buildTextureSet(tintedSet));
           // 「敵プレイヤーの画像アイコンも表示してほしい」への対応:
-          // 右側パネルの各プレイヤーカードにも色調補正済みスナップショットを使う。
-          if (tintedSet.down) this._setPlayerCardIcon(player.playerId, tintedSet.down);
+          // 右側パネルの各プレイヤーカードにも色調補正済みスナップショット(静止ポーズ)を使う。
+          if (tintedSet.down?.idle) this._setPlayerCardIcon(player.playerId, tintedSet.down.idle);
         }
       }
 
@@ -1213,6 +1243,59 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
+   * 「制限時間を過ぎたら終わりではなく、制限時間が過ぎて０になったら
+   * 残り一人になるまで爆弾が沢山降ってくるようにしてほしい」への対応。
+   * BattleSystem.suddenDeathがtrueになった後、一定間隔(SUDDEN_DEATH_
+   * BOMB_INTERVAL_MS)ごとに、生存者がいる各面へ環境爆弾(誰の所有でもない、
+   * ownerId:null の爆弾。プレイヤーの所持数制限とは無関係で何個でも降る)を
+   * 降らせる。オンライン対戦のゲスト側はupdate()内でこのメソッドに到達する
+   * 前に_updateGuest(time)がreturnするため、常にホスト/ローカル権威側のみ
+   * で実行される(通常の爆弾追加と同じ仕組み(this.bombs.push +
+   * cubeRenderer.addBomb)で見た目もゲストへ自然に伝わる)。
+   */
+  _updateSuddenDeathBombRain(time) {
+    if (!this.battleSystem.suddenDeath || this.battleSystem.isOver) return;
+    if (time < this._nextSuddenDeathDropAt) return;
+    this._nextSuddenDeathDropAt = time + SUDDEN_DEATH_BOMB_INTERVAL_MS;
+    this._spawnSuddenDeathBombs();
+  }
+
+  /** 生存者がいる面それぞれに対し、1波あたりSUDDEN_DEATH_BOMBS_PER_WAVE個の環境爆弾を降らせる */
+  _spawnSuddenDeathBombs() {
+    const livingFaces = new Set(this.players.filter((p) => p.isAlive).map((p) => p.face));
+    for (const face of livingFaces) {
+      for (let i = 0; i < SUDDEN_DEATH_BOMBS_PER_WAVE; i++) {
+        this._trySpawnEnvironmentBomb(face);
+      }
+    }
+  }
+
+  /** 指定の面から、爆弾を置ける(空白かつ未設置の)マスをランダムに1つ選んで環境爆弾を設置する */
+  _trySpawnEnvironmentBomb(face) {
+    const faceStage = this.stage.getFaceStage(face);
+    if (!faceStage) return;
+
+    const candidates = [];
+    for (let row = 0; row < faceStage.rows; row++) {
+      for (let col = 0; col < faceStage.cols; col++) {
+        if (!faceStage.canPlaceBombAt(col, row)) continue;
+        if (this._isTileOccupiedByBomb(face, col, row)) continue;
+        candidates.push({ col, row });
+      }
+    }
+    if (candidates.length === 0) return;
+
+    const { col, row } = random.pick(candidates);
+    const bomb = new Bomb(this, face, col, row, {
+      ownerId: null,
+      blastRange: SUDDEN_DEATH_BLAST_RANGE,
+      onDetonate: (b) => this._onBombDetonate(b),
+    });
+    this.bombs.push(bomb);
+    this.cubeRenderer?.addBomb(bomb);
+  }
+
+  /**
    * 「キャラクターを倒したら、取ったアイテムを落とすようにしてほしい」への対応。
    * 死亡したプレイヤーがそれまでに取得したアイテム種別ぶん、死亡地点付近の
    * 空きマスにアイテムを再出現させる。死亡地点そのものは直前の爆風で
@@ -1361,6 +1444,7 @@ export class GameScene extends Phaser.Scene {
     this._handleItemPickup();
 
     this.battleSystem.update(delta);
+    this._updateSuddenDeathBombRain(time);
     this._updateHud();
 
     if (this.cubeRenderer?.ready) {
