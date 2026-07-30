@@ -25,9 +25,18 @@
  * - プレイヤーの移動のみが面をまたぐ（resolveMove）。
  * ------------------------------------------------------------
  */
-import { CUBE_FACE_NAMES, CUBE_FACE_COLS, CUBE_FACE_ROWS, MAX_PLAYERS } from '../constants/GameConstants.js';
+import {
+  CUBE_FACE_NAMES,
+  CUBE_FACE_COLS,
+  CUBE_FACE_ROWS,
+  MAX_PLAYERS,
+  BLOCK_TYPES,
+  ITEM_TYPES,
+  TIMER_ITEM_COUNT_PER_STAGE,
+} from '../constants/GameConstants.js';
 import { CROSSING_TABLE } from '../constants/CubeTopology.js';
 import { Stage, buildStartCandidates } from './Stage.js';
+import { random } from '../utils/Random.js';
 
 const DIRECTION_VECTORS = Object.freeze({
   up: { dCol: 0, dRow: -1 },
@@ -129,6 +138,7 @@ export class CubeStage {
         col: centerCol,
         row: centerRow,
       }));
+      this._assignFixedTimerItems();
       return this.faces;
     }
 
@@ -155,7 +165,42 @@ export class CubeStage {
     }
 
     this.startPositions = positions;
+    this._assignFixedTimerItems();
     return this.faces;
+  }
+
+  /**
+   * 「時限装置アイテムの出現個数を1ステージ4個にして」への対応(2026-07)。
+   * TIMER(⏱)はITEM_SPAWN_WEIGHTSの重み付き抽選には含めていないため、
+   * 各面生成・安全地帯確保が完全に終わった後(=このタイミング以降は
+   * どのタイルも上書きされない)に、全6面のアイテム入りブロック(ITEM)の
+   * 中からランダムにTIMER_ITEM_COUNT_PER_STAGE個を選び、その中身を
+   * TIMERへ差し替える(既存のアイテム入りブロックの個数自体は変えず、
+   * 中身の一部だけをTIMERに割り当てる方式)。
+   * 安全地帯確保より前に行うと、後から_clearSafeZone()で該当タイルが
+   * EMPTYに上書きされ、選んだTIMERが消えてしまう可能性があるため、
+   * 必ずgenerate()の最後(return直前)に呼び出すこと。
+   */
+  _assignFixedTimerItems() {
+    // 全6面から「アイテム入りブロック(ITEM)」のタイルを(stage, col, row)の
+    // 組で集めた候補一覧を作る。
+    const tileCandidates = [];
+    for (const name of CUBE_FACE_NAMES) {
+      const stage = this.faces[name];
+      for (let row = 0; row < stage.rows; row++) {
+        for (let col = 0; col < stage.cols; col++) {
+          if (stage.getBlockType(col, row) === BLOCK_TYPES.ITEM) {
+            tileCandidates.push({ stage, col, row });
+          }
+        }
+      }
+    }
+    random.shuffle(tileCandidates);
+    const pickCount = Math.min(TIMER_ITEM_COUNT_PER_STAGE, tileCandidates.length);
+    for (let i = 0; i < pickCount; i++) {
+      const { stage, col, row } = tileCandidates[i];
+      stage.itemTypeByTile.set(`${col},${row}`, ITEM_TYPES.TIMER);
+    }
   }
 
   /**

@@ -86,11 +86,22 @@ export const PLAYER_COLOR_HEX = Object.freeze({
 // 難しいため、現状はAI専用とする）。各配列の並びは
 // [up, down, left, right, bomb] のPhaser.Input.Keyboard.KeyCodes名。
 export const MAX_HUMAN_PLAYERS = 4;
+// 「なにか別のボタン押すと爆発するような感じ」への対応(2026-07):
+// 時限装置(⏱)専用の起爆ボタン(detonate)を、既存の爆弾設置ボタン(bomb)とは
+// 別のキーとして各プレイヤーに割り当てる(⏱未取得のプレイヤーが押しても
+// 何も起こらない。GameScene._tryRemoteDetonate参照)。
 export const HUMAN_KEY_MAPS = Object.freeze([
-  Object.freeze({ up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', bomb: 'SPACE' }), // プレイヤー1: 矢印キー+Space
-  Object.freeze({ up: 'W', down: 'S', left: 'A', right: 'D', bomb: 'F' }), // プレイヤー2: WASD+F
-  Object.freeze({ up: 'I', down: 'K', left: 'J', right: 'L', bomb: 'U' }), // プレイヤー3: IJKL+U
-  Object.freeze({ up: 'NUMPAD_EIGHT', down: 'NUMPAD_TWO', left: 'NUMPAD_FOUR', right: 'NUMPAD_SIX', bomb: 'NUMPAD_ZERO' }), // プレイヤー4: テンキー
+  Object.freeze({ up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT', bomb: 'SPACE', detonate: 'SHIFT' }), // プレイヤー1: 矢印キー+Space、起爆はShift
+  Object.freeze({ up: 'W', down: 'S', left: 'A', right: 'D', bomb: 'F', detonate: 'G' }), // プレイヤー2: WASD+F、起爆はG
+  Object.freeze({ up: 'I', down: 'K', left: 'J', right: 'L', bomb: 'U', detonate: 'O' }), // プレイヤー3: IJKL+U、起爆はO
+  Object.freeze({
+    up: 'NUMPAD_EIGHT',
+    down: 'NUMPAD_TWO',
+    left: 'NUMPAD_FOUR',
+    right: 'NUMPAD_SIX',
+    bomb: 'NUMPAD_ZERO',
+    detonate: 'NUMPAD_ONE',
+  }), // プレイヤー4: テンキー、起爆はテンキー1
 ]);
 
 // --- 爆弾設定 -----------------------------------------------------
@@ -124,19 +135,27 @@ export const ITEM_BLOCK_RATE = 0.35; // 壊せるブロックのうちアイテ�
 export const SAFE_ZONE_RADIUS = 1; // 各プレイヤー開始地点周辺の安全地帯半径（マス）
 
 // --- アイテム設定 ---------------------------------------------------
+// 「盾のアイテムを削除して」への対応(2026-07): SHIELD(🛡 5秒無敵)は
+// ITEM_TYPES・ITEM_SPAWN_WEIGHTS・ITEM_EMOJI(Item.js)・ITEM_EFFECTS
+// (ItemSystem.js)から完全に削除した。
 export const ITEM_TYPES = Object.freeze({
   BOMB_UP: 'bomb_up', // 💣 爆弾数+1
   FIRE_UP: 'fire_up', // 🔥 爆風+1
   SPEED_UP: 'speed_up', // 👟 移動速度アップ
-  SHIELD: 'shield', // 🛡 5秒無敵
   LIFE_UP: 'life_up', // ❤️ 残機+1
   GHOST: 'ghost', // 👻 壊せるブロックを通過可能
   KICK: 'kick', // 💥 爆弾キック(蹴って移動させられる)
-  // 「新しいアイテム時限装置機能アイテムを追加してほしい」への対応(2026-07)。
-  // ⏱ 時限装置(リモート起爆): 取得すると、自分の爆弾は導火線(BOMB_FUSE_MS)
-  // 任せにせず、爆弾ボタンを押すタイミングで自分の意思で起爆できるように
-  // なる(GameScene._tryPlaceBomb参照)。導火線自体は保険としてそのまま
-  // 残るため、起爆し忘れても一定時間後には自然に爆発する。
+  // 【2026-07 再設計】「時限装置取った後はプレイヤーが指示出すか、誘爆
+  // 以外で爆発しないようにして。なにか別のボタン押すと爆発するような
+  // 感じ」への対応。以前は「爆弾を新規に置けない時だけ、爆弾ボタンで
+  // 早期起爆できる」という導火線への追加機能に過ぎなかったが、今回から
+  // ⏱ 取得後は自分の爆弾の導火線(BOMB_FUSE_MS)自体が完全に無効になり、
+  // (1)専用の起爆ボタン(detonate。HUMAN_KEY_MAPS参照)を押すか、
+  // (2)他の爆弾の爆風を受けて誘爆する、のいずれかでしか爆発しなくなる
+  // (Bomb.js options.noAutoFuse / GameScene._tryPlaceBomb参照)。
+  // 強力な効果のため、出現数もITEM_SPAWN_WEIGHTSの重み付き抽選ではなく、
+  // 1ステージ(1試合)につき必ずTIMER_ITEM_COUNT_PER_STAGE個だけに固定する
+  // (CubeStage._assignFixedTimerItems参照)。
   TIMER: 'timer',
 });
 
@@ -144,18 +163,24 @@ export const ITEM_TYPES = Object.freeze({
 // この重みに従って「アイテム候補プール」を組み立てる(重み2のタイプが
 // 重み1のタイプの2倍出現しやすい、という単純な多重化方式)。
 // 「壁抜け(GHOST)は強力なので出現量を半分にしてほしい」という要望に対応し、
-// GHOSTのみ他の半分の重みにしてある。時限装置(TIMER)も強力な効果のため
-// GHOSTと同様、他の半分の重みにしてある。
+// GHOSTのみ他の半分の重みにしてある。
+// NOTE: TIMER(時限装置)はこの重み付き抽選には含めない。出現数を
+// 1ステージ4個に固定するため、CubeStage.generate()が生成後に別途
+// 割り当てる(TIMER_ITEM_COUNT_PER_STAGE参照)。
 export const ITEM_SPAWN_WEIGHTS = Object.freeze({
   [ITEM_TYPES.BOMB_UP]: 2,
   [ITEM_TYPES.FIRE_UP]: 2,
   [ITEM_TYPES.SPEED_UP]: 2,
-  [ITEM_TYPES.SHIELD]: 2,
   [ITEM_TYPES.LIFE_UP]: 2,
   [ITEM_TYPES.GHOST]: 1,
   [ITEM_TYPES.KICK]: 2,
-  [ITEM_TYPES.TIMER]: 1,
 });
+
+// 「時限装置アイテムの出現個数を1ステージ4個にして」への対応(2026-07)。
+// ITEM_SPAWN_WEIGHTSの重み付き抽選とは独立に、1試合(6面のCubeStage全体)
+// につき必ずこの個数だけTIMERアイテムが出現するようにする
+// (CubeStage._assignFixedTimerItems参照)。
+export const TIMER_ITEM_COUNT_PER_STAGE = 4;
 
 // 💥(KICK)アイテムを持つプレイヤーが爆弾へ向かって移動した際、爆弾を
 // 何マス先まで滑らせるかの1マスあたりのアニメーション時間。

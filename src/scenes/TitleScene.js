@@ -58,17 +58,32 @@ export class TitleScene extends Phaser.Scene {
     this._uiScale = computeUIScale(this.scale.width, this.scale.height);
     const s = this._uiScale;
 
-    // 「トップ画面全体に画像表示させてほしい」への対応: 以前は画面上部に
-    // 小さく表示するだけだったロゴ画像を、画面全体を覆う背景として表示する。
-    // 画像(正方形)と画面(横長/縦長どちらもありうる)のアスペクト比が異なる
-    // ため、CSSのbackground-size:coverと同じ考え方で「幅・高さのどちらか
-    // 大きい方の倍率」に合わせて拡大し、はみ出た分は中央基準で切れるように
-    // する(余白が空かない・全画面を隙間なく覆う)。
+    // 「トップ画面の画像が切れているので修正して」への対応(再修正):
+    // 従来はcover方式(画面の縦横どちらか大きい方の倍率に合わせて拡大)
+    // 1枚だけで画面全体を覆っていたため、画像のアスペクト比と画面の
+    // アスペクト比が異なる場合、キャラや文字などロゴの重要な部分が
+    // 画面外に切れて表示されてしまっていた。
+    // 今回は2枚重ねに変更する:
+    //   1. 背景(cover, 少し暗めのティント): 画面全体を隙間なく覆う。
+    //      多少トリミングされるが、あくまで雰囲気を出すためだけの
+    //      背景なので問題ない。
+    //   2. 前景(contain, フルカラー): 画像の縦横どちらか小さい方の倍率
+    //      に合わせて縮小し、絶対にトリミングされない(=ロゴ全体が
+    //      必ず画面内に収まる)。余白ができる場合は背景(1)がその余白を
+    //      埋めるため、結果として画面いっぱいに見えつつロゴも欠けない。
     let hasBgImage = false;
     if (this.textures.exists(TITLE_LOGO_KEY)) {
-      const bg = this.add.image(centerX, centerY, TITLE_LOGO_KEY).setOrigin(0.5);
-      const coverScale = Math.max(this.scale.width / bg.width, this.scale.height / bg.height);
-      bg.setScale(coverScale);
+      const bgImage = this.add.image(centerX, centerY, TITLE_LOGO_KEY).setOrigin(0.5);
+      const coverScale = Math.max(this.scale.width / bgImage.width, this.scale.height / bgImage.height);
+      bgImage.setScale(coverScale);
+      // 背景は前景の引き立て役なので、暗めにティントしてコントラストを抑える
+      // (前景と重なっても違和感が出にくいよう、彩度・明度を落とすだけの
+      // ニュートラルな暗灰色でティントする)。
+      bgImage.setTint(0x888888);
+
+      const fgImage = this.add.image(centerX, centerY, TITLE_LOGO_KEY).setOrigin(0.5);
+      const containScale = Math.min(this.scale.width / fgImage.width, this.scale.height / fgImage.height);
+      fgImage.setScale(containScale);
       hasBgImage = true;
 
       // 「選択項目は見やすくしてほしい」「トップ画面の画像が小さい」への

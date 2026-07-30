@@ -21,7 +21,7 @@
  * @returns {{
  *   up: {x:number,y:number}, down: {x:number,y:number},
  *   left: {x:number,y:number}, right: {x:number,y:number},
- *   bomb: {x:number,y:number}, pause: {x:number,y:number}
+ *   bomb: {x:number,y:number}, detonate: {x:number,y:number}, pause: {x:number,y:number}
  * }}
  */
 export function computeTouchControlLayout(stageWidth, totalHeight) {
@@ -43,6 +43,10 @@ export function computeTouchControlLayout(stageWidth, totalHeight) {
     left: { x: dpadCenterX - dpadGap, y: dpadCenterY },
     right: { x: dpadCenterX + dpadGap, y: dpadCenterY },
     bomb: { x: bombX, y: safeTotalHeight - 80 },
+    // 時限装置(⏱)専用の起爆ボタン。「なにか別のボタンを押すと爆発する
+    // ようにしてほしい」への対応(2026-07)。爆弾ボタンの真上に配置し、
+    // 誤タップしにくいよう十分な間隔(70px)を空ける。
+    detonate: { x: bombX, y: safeTotalHeight - 150 },
     pause: { x: safeStageWidth - 22, y: 22 },
   };
 }

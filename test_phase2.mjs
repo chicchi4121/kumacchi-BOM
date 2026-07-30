@@ -112,9 +112,9 @@ console.log('\n== 3. ItemSystemの効果適用 ==');
   ItemSystem.applyItem(p, ITEM_TYPES.LIFE_UP, fakeScene);
   check('LIFE_UPでlivesが増える', p.lives === 4);
 
-  p = makeFakePlayer();
-  ItemSystem.applyItem(p, ITEM_TYPES.SHIELD, fakeScene);
-  check('SHIELDでinvincibleUntilが未来の時刻になる', p.invincibleUntil === 1000 + 5000);
+  // SHIELD(🛡)は2026-07に「盾のアイテムを削除して」への対応で完全に
+  // 廃止されたため、このテストケース自体を削除した(ITEM_TYPES.SHIELDは
+  // もう存在しない)。
 
   p = makeFakePlayer();
   ItemSystem.applyItem(p, ITEM_TYPES.GHOST, fakeScene);
@@ -207,10 +207,11 @@ console.log('\n== 5. AI/AISystemのimportとインスタンス化 ==');
 {
   const fakePlayer = { isAlive: true, isMoving: false, col: 1, row: 1, canPassSoftBlock: false, canKickBombs: false };
   const ai = new AI(fakePlayer, 'hard');
-  // 2026-07「AIのレベルを少し下げてほしい」対応でHARDのdecisionIntervalMsを
-  // 220ms→260msに緩和した(値そのものより「プロファイルが正しく反映される
-  // こと」の確認が主目的のため、実際の定数値と一致させて回帰防止する)。
-  check('AIインスタンスが難易度プロファイルを保持する', ai.profile.decisionIntervalMs === 260);
+  // 2026-07「敵をまだ弱くしてほしい」対応(3回目)でHARDのdecisionIntervalMsを
+  // 260ms→320msにさらに緩和した(値そのものより「プロファイルが正しく
+  // 反映されること」の確認が主目的のため、実際の定数値と一致させて回帰
+  // 防止する)。
+  check('AIインスタンスが難易度プロファイルを保持する', ai.profile.decisionIntervalMs === 320);
 
   const aiSystem = new AISystem();
   aiSystem.setup([fakePlayer, fakePlayer], 'expert');

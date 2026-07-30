@@ -65,6 +65,7 @@ import {
   buildResultEvent,
   buildMoveInputMessage,
   buildBombInputMessage,
+  buildDetonateInputMessage,
   pickDirectionFromKeys,
   applyPlayerState,
   diffById,
@@ -251,6 +252,9 @@ export class GameScene extends Phaser.Scene {
     } else if (msg.mode === 'bomb') {
       const player = this.players.find((p) => p.playerId === playerId);
       if (player) this._tryPlaceBomb(player);
+    } else if (msg.mode === 'detonate') {
+      const player = this.players.find((p) => p.playerId === playerId);
+      if (player) this._tryRemoteDetonate(player);
     }
   }
 
@@ -343,10 +347,17 @@ export class GameScene extends Phaser.Scene {
       left: this.input.keyboard.addKey(KeyCodes[map.left]),
       right: this.input.keyboard.addKey(KeyCodes[map.right]),
       bomb: this.input.keyboard.addKey(KeyCodes[map.bomb]),
+      detonate: this.input.keyboard.addKey(KeyCodes[map.detonate]),
     };
     this._guestKeys.bomb.on('down', () => {
       if (this.countdownActive || !this.myPlayerId) return;
       this.config.online.network.send(buildBombInputMessage(this.myPlayerId));
+    });
+    // ⏱(TIMER)専用の起爆ボタン(ゲスト側)。ホストへdetonate入力を送るのみ
+    // (ホスト権威型のため、実際の起爆判定・処理はホスト側で行う)。
+    this._guestKeys.detonate.on('down', () => {
+      if (this.countdownActive || !this.myPlayerId) return;
+      this.config.online.network.send(buildDetonateInputMessage(this.myPlayerId));
     });
   }
 
@@ -524,10 +535,45 @@ export class GameScene extends Phaser.Scene {
     if (!this._matchInitReceived) return;
     this._sendGuestMoveInputIfDue(time);
     this._updateHud();
-    if (this.cubeRenderer?.ready) {
+    this._renderCubeStage(time);
+  }
+
+  /**
+   * 毎フレームの3D描画(Three.js側)更新をまとめて行う(_updateGuest・
+   * 通常のupdate()の両方から呼ぶ共通処理)。
+   *
+   * 【バグ調査(2026-07): 「移動しても面が切り替わらない」への対応】
+   * rotateToFace自体はtest_cube_renderer_runtime.mjsで全24通り(6面×4方向)を
+   * 実際にCubeRenderer.jsのソースを動かして検証済みで、回転の数式・実装に
+   * 問題は見つからなかった。ただし、以前はここで万一(未知の状態・将来の
+   * 変更等により)例外が発生した場合に何のガードも無く、Phaserのupdate()
+   * ループに例外が伝播していた。もし一度でも例外が起きると、以後は毎
+   * フレーム同じ場所で例外が再発し続け、3D描画側が「その時点の見た目の
+   * まま完全に固まる」(=ユーザーからは「移動しても面が変わらない」ように
+   * 見える)おそれがあるため、init()等の非同期初期化処理と同様にここでも
+   * 例外を握りつぶしてコンソールに記録するだけに留める(開発ルール8:
+   * 3D描画の不具合がゲーム進行自体を止めないようにする、と同じ考え方)。
+   * cubeRenderer自体は無効化せず毎フレーム再試行するため、原因が一時的な
+   * 状態(例: 削除済みオブジェクトの参照等)であれば次フレームで自然に
+   * 復帰できる可能性を残す。
+   * @param {number} time
+   */
+  _renderCubeStage(time) {
+    if (!this.cubeRenderer?.ready) return;
+    try {
       this.cubeRenderer.syncPlayers(this.players, time);
-      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, this.humanPlayer.lastCrossDirection, time);
+      if (this.humanPlayer) {
+        this.cubeRenderer.rotateToFace(this.humanPlayer.face, this.humanPlayer.lastCrossDirection, time);
+      }
       this.cubeRenderer.render(time);
+    } catch (e) {
+      if (!this._cubeRenderErrorLogged) {
+        this._cubeRenderErrorLogged = true;
+        console.error(
+          '[GameScene] 3D描画(Three.js)の毎フレーム更新中に例外が発生しました。3Dの見た目が一時的に更新されない場合がありますが、2D側のゲーム進行は継続します。',
+          e
+        );
+      }
     }
   }
 
@@ -792,6 +838,7 @@ export class GameScene extends Phaser.Scene {
       this._touchControls.leftBtn.setPosition(layout.left.x, layout.left.y);
       this._touchControls.rightBtn.setPosition(layout.right.x, layout.right.y);
       this._touchControls.bombBtn.setPosition(layout.bomb.x, layout.bomb.y);
+      this._touchControls.detonateBtn.setPosition(layout.detonate.x, layout.detonate.y);
       this._touchControls.pauseBtn.setPosition(layout.pause.x, layout.pause.y);
     }
   }
@@ -964,10 +1011,17 @@ export class GameScene extends Phaser.Scene {
         left: this.input.keyboard.addKey(KeyCodes[map.left]),
         right: this.input.keyboard.addKey(KeyCodes[map.right]),
         bomb: this.input.keyboard.addKey(KeyCodes[map.bomb]),
+        detonate: this.input.keyboard.addKey(KeyCodes[map.detonate]),
       };
       keys.bomb.on('down', () => {
         if (this.countdownActive) return;
         this._tryPlaceBomb(player);
+      });
+      // ⏱(TIMER)専用の起爆ボタン。未取得のプレイヤーが押しても
+      // _tryRemoteDetonate内のガードで何も起きない。
+      keys.detonate.on('down', () => {
+        if (this.countdownActive) return;
+        this._tryRemoteDetonate(player);
       });
       return { player, keys };
     });
@@ -1056,6 +1110,27 @@ export class GameScene extends Phaser.Scene {
     bombBtn.on('pointerup', bombRelease);
     bombBtn.on('pointerout', bombRelease);
 
+    // ⏱(TIMER)専用の起爆ボタン(タッチ操作)。「なにか別のボタンを押すと
+    // 爆発するようにしてほしい」への対応(2026-07)。未取得のプレイヤーが
+    // 押しても_tryRemoteDetonate内のガードで何も起きない。
+    const detonateBtn = this.add
+      .text(layout.detonate.x, layout.detonate.y, '⏱', {
+        fontSize: '28px',
+        backgroundColor: '#2a4a5a',
+        padding: { x: 16, y: 12 },
+      })
+      .setOrigin(0.5)
+      .setAlpha(0.65)
+      .setDepth(DEPTH.UI)
+      .setInteractive({ useHandCursor: true });
+    const detonateRelease = () => detonateBtn.setAlpha(0.65);
+    detonateBtn.on('pointerdown', () => {
+      detonateBtn.setAlpha(0.95);
+      this._handleTouchDetonatePress();
+    });
+    detonateBtn.on('pointerup', detonateRelease);
+    detonateBtn.on('pointerout', detonateRelease);
+
     const pauseBtn = this.add
       .text(layout.pause.x, layout.pause.y, '⏸', {
         fontSize: '20px',
@@ -1071,7 +1146,7 @@ export class GameScene extends Phaser.Scene {
       if (!this.countdownActive) this._pauseGame();
     });
 
-    this._touchControls = { upBtn, downBtn, leftBtn, rightBtn, bombBtn, pauseBtn };
+    this._touchControls = { upBtn, downBtn, leftBtn, rightBtn, bombBtn, detonateBtn, pauseBtn };
   }
 
   /**
@@ -1092,9 +1167,33 @@ export class GameScene extends Phaser.Scene {
     if (player) this._tryPlaceBomb(player);
   }
 
+  /**
+   * タッチ操作の⏱起爆ボタンが押された時の処理。_handleTouchBombPressと
+   * 同じ考え方(ローカルでは直接_tryRemoteDetonateを呼び、オンライン
+   * ゲストはホストへdetonate入力メッセージを送信するだけにする)。
+   */
+  _handleTouchDetonatePress() {
+    if (this.countdownActive) return;
+    if (this.config.mode === 'online' && this.config.online?.role === 'guest') {
+      if (!this.myPlayerId) return;
+      this.config.online.network.send(buildDetonateInputMessage(this.myPlayerId));
+      return;
+    }
+    const player = this._humanInputs?.[0]?.player;
+    if (player) this._tryRemoteDetonate(player);
+  }
+
   /** 試合開始前の「3・2・1・START」カウントダウン演出。終了までプレイヤー/AIの行動を止める */
   _startCountdown() {
     this.countdownActive = true;
+    // 「スタートのカウントダウンは無音にして」への対応(再調査): 以前は
+    // countdown_tick/countdown_go効果音の呼び出しだけを削除したが、実際には
+    // タイトル画面/ロビーで鳴らしていたBGM(soundSystemのplayBGM('title')等)
+    // が止まらないまま鳴り続けており、カウントダウン中も音が聞こえていた
+    // (「まだ無音になっていない」報告の原因)。ここで明示的にBGMを止め、
+    // カウントダウン終了時に対戦用BGMが鳴り始めるまでの間を完全な無音にする
+    // (対戦用BGM再生の実際の呼び出しはこのメソッド末尾のdelayedCall内)。
+    soundSystem.stopBGM();
     // 画面レイアウトのブラウザ追従(2026-07更新)により、中央位置は固定値
     // (旧SCREEN_WIDTH/SCREEN_HEIGHT)ではなく、右側パネル分を除いた
     // 3Dステージ表示領域(this._layout)の中央を使う(_onGameResizeが
@@ -1133,12 +1232,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * 「新しいアイテム時限装置機能アイテムを追加してほしい」への対応:
-   * ⏱(TIMER)取得済みプレイヤーが、新しく爆弾を置けない状況(既に上限数
-   * 置いている・自分の爆弾の上に立っている等)で爆弾ボタンを押した場合は、
-   * 新規設置の代わりに自分が既に置いている爆弾を全て今すぐ起爆する
-   * (リモート起爆。導火線(BOMB_FUSE_MS)任せにせず自分のタイミングで
-   * 爆発させられる)。⏱未取得なら、これまで通り単に何もしない。
+   * 通常の爆弾設置。⏱(TIMER)取得済みプレイヤーの爆弾は導火線による自動
+   * 爆発を持たない(noAutoFuse)ため、専用の起爆ボタン(_tryRemoteDetonate。
+   * HUMAN_KEY_MAPS.detonate参照)を押すか、誘爆されるまでその場に留まる。
+   *
+   * 【2026-07再設計】以前は「新規に置けない時だけ、爆弾ボタンで代わりに
+   * 早期起爆する」フォールバック方式だったが、「時限装置取った後は
+   * プレイヤーが指示出すか、誘爆以外で爆発しないようにして。なにか別の
+   * ボタン押すと爆発するような感じ」への対応で、起爆は専用の別ボタンに
+   * 完全に切り出した(このメソッドはもう起爆処理を兼ねない)。
    */
   _tryPlaceBomb(player) {
     if (!player || !player.isAlive) return;
@@ -1148,15 +1250,13 @@ export class GameScene extends Phaser.Scene {
       !this._isTileOccupiedByBomb(player.face, player.col, player.row) &&
       this.stage.canPlaceBombAt(player.face, player.col, player.row);
 
-    if (!canPlaceHere) {
-      if (player.hasRemoteDetonator) this._tryRemoteDetonate(player);
-      return;
-    }
+    if (!canPlaceHere) return;
 
     const bomb = new Bomb(this, player.face, player.col, player.row, {
       ownerId: player.playerId,
       blastRange: player.blastRange,
       onDetonate: (b) => this._onBombDetonate(b),
+      noAutoFuse: player.hasRemoteDetonator,
     });
     this.bombs.push(bomb);
     this.cubeRenderer?.addBomb(bomb);
@@ -1165,14 +1265,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * ⏱(TIMER)によるリモート起爆本体。playerが所有する、まだ爆発していない
-   * 全ての爆弾(蹴られてスライド中のものも含む)を即座に起爆する。
-   * 1つも無ければ何もしない。誘爆と同じ`detonate()`をそのまま呼ぶだけ
-   * なので、導火線タイマーの解除・爆風計算・ネットワーク同期(オンライン
-   * 対戦時の explosion イベント送信)は全て既存の`_onBombDetonate`の
-   * 仕組みがそのまま面倒を見る。
+   * ⏱(TIMER)専用の起爆ボタン(HUMAN_KEY_MAPS.detonate/タッチのdetonateBtn)
+   * が押された時の処理本体。⏱未取得のプレイヤーが押しても何も起きない
+   * (2026-07再設計: 起爆は専用ボタンでのみ行う。爆弾ボタンのフォール
+   * バックだった旧仕様は廃止)。
+   * playerが所有する、まだ爆発していない全ての爆弾(蹴られてスライド中の
+   * ものも含む)を即座に起爆する。1つも無ければ何もしない。誘爆と同じ
+   * `detonate()`をそのまま呼ぶだけなので、導火線タイマーの解除・爆風計算・
+   * ネットワーク同期(オンライン対戦時のexplosionイベント送信)は全て既存の
+   * `_onBombDetonate`の仕組みがそのまま面倒を見る。
    */
   _tryRemoteDetonate(player) {
+    if (!player || !player.hasRemoteDetonator) return;
     const ownBombs = this.bombs.filter((b) => b.ownerId === player.playerId && !b.detonated);
     if (ownBombs.length === 0) return;
     for (const bomb of ownBombs) {
@@ -1493,11 +1597,7 @@ export class GameScene extends Phaser.Scene {
     this._updateSuddenDeathBombRain(time);
     this._updateHud();
 
-    if (this.cubeRenderer?.ready) {
-      this.cubeRenderer.syncPlayers(this.players, time);
-      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, this.humanPlayer.lastCrossDirection, time);
-      this.cubeRenderer.render(time);
-    }
+    this._renderCubeStage(time);
 
     if (this.config.mode === 'online') this._broadcastStateIfDue(time);
 
@@ -1700,6 +1800,7 @@ export class GameScene extends Phaser.Scene {
     if (player.speedMultiplier > 1) badges.push('👟');
     if (player.canPassSoftBlock) badges.push('👻');
     if (player.canKickBombs) badges.push('💥');
+    if (player.hasRemoteDetonator) badges.push('⏱');
     if (player.isInvincible) badges.push('🛡');
     // 「一人1回まで爆弾に当たっても大丈夫」の猶予をまだ持っているかどうかも
     // 各プレイヤーの情報として一覧できるようにする。

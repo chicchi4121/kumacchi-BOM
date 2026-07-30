@@ -17,8 +17,14 @@ export class Bomb {
    * @param {string} face - サイコロ6面ステージ上でこの爆弾が置かれている面(CUBE_FACE_NAMESのいずれか)
    * @param {number} col
    * @param {number} row
-   * @param {object} options - { ownerId, blastRange, onDetonate }
+   * @param {object} options - { ownerId, blastRange, onDetonate, noAutoFuse }
    *   onDetonate: (bomb: Bomb) => void  爆発時に呼び出されるコールバック
+   *   noAutoFuse: 時限装置(⏱)取得済みプレイヤーの爆弾かどうか。trueの場合、
+   *     導火線タイマー(BOMB_FUSE_MS後の自動爆発)を一切仕掛けない。
+   *     GameScene._tryRemoteDetonate(専用の起爆ボタン)による明示的な
+   *     detonate()呼び出しか、誘爆(他の爆弾の爆風によるdetonate()呼び出し)
+   *     でしか爆発しなくなる(2026-07再設計。「時限装置取得後は指示出すか
+   *     誘爆以外で爆発しないようにして」への対応)。
    */
   constructor(scene, face, col, row, options = {}) {
     this.scene = scene;
@@ -32,6 +38,7 @@ export class Bomb {
     this.ownerId = options.ownerId ?? null;
     this.blastRange = options.blastRange ?? 1;
     this.onDetonate = options.onDetonate ?? (() => {});
+    this.noAutoFuse = options.noAutoFuse ?? false;
     this.detonated = false;
 
     // --- 💥(KICK)アイテムによる蹴り移動用(見た目の補間はPlayerと同じ
@@ -56,7 +63,10 @@ export class Bomb {
 
     // 約3秒後に自動爆発するタイマー。誘爆時はdetonate()が先に呼ばれ、
     // その中でこのタイマーをキャンセルする。
-    this.fuseTimer = scene.time.delayedCall(BOMB_FUSE_MS, () => this.detonate());
+    // 【2026-07再設計】noAutoFuse(時限装置⏱取得済みプレイヤーの爆弾)の
+    // 場合はこの自動爆発タイマー自体を仕掛けない。専用の起爆ボタン
+    // (GameScene._tryRemoteDetonate)か誘爆でのみdetonate()が呼ばれる。
+    this.fuseTimer = this.noAutoFuse ? null : scene.time.delayedCall(BOMB_FUSE_MS, () => this.detonate());
   }
 
   _createSprite() {

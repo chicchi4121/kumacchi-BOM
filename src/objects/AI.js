@@ -48,39 +48,46 @@ import { Explosion } from './Explosion.js';
 // 逃げ切れず、危険地帯に留まって被弾しやすくなる)ようにした。あわせて
 // mistakeChance自体もさらに引き上げ、「そもそも回避を試みない」頻度も
 // 増やした。
+// 【2026-07 3度目の再修正】「敵をまだ弱くしてほしい」への対応(3回目)。
+// 過去2回の調整でも「まだ強い」との継続報告のため、今回は数値を小刻みに
+// 動かすのではなく、全パラメータをまとめてはっきり弱める方向に踏み込んだ
+// (反応間隔をさらに伸ばす、mistakeChanceを大きく引き上げる、
+// bombChance/killShotChance/chaseChanceを大きく下げる、EASY/NORMALの
+// escapeSearchDepthを1〜2まで削って複雑な回避はほぼ失敗するようにする)。
+// 難易度間の相対順序(EASY<NORMAL<HARD<EXPERT)は従来通り維持している。
 const AI_PROFILES = Object.freeze({
   [AI_DIFFICULTY.EASY]: {
-    decisionIntervalMs: 600, // 判断の間隔（長いほど反応が遅い）
+    decisionIntervalMs: 700, // 判断の間隔（長いほど反応が遅い）
     // 危険地帯にいても回避に失敗する確率。
-    mistakeChance: 0.45,
-    bombChance: 0.28, // ブロック破壊(徘徊/進路上)を試みる確率
-    killShotChance: 0.4, // 撃破チャンスを実行に移す確率
-    chaseChance: 0.22, // プレイヤーを追跡する確率（それ以外は徘徊/アイテム優先）
-    escapeSearchDepth: 2, // 回避経路を探索する先読みの深さ(浅いほど複雑な回避に失敗しやすい)
+    mistakeChance: 0.55,
+    bombChance: 0.22, // ブロック破壊(徘徊/進路上)を試みる確率
+    killShotChance: 0.3, // 撃破チャンスを実行に移す確率
+    chaseChance: 0.15, // プレイヤーを追跡する確率（それ以外は徘徊/アイテム優先）
+    escapeSearchDepth: 1, // 回避経路を探索する先読みの深さ(浅いほど複雑な回避に失敗しやすい)
   },
   [AI_DIFFICULTY.NORMAL]: {
-    decisionIntervalMs: 420,
-    mistakeChance: 0.28,
-    bombChance: 0.45,
-    killShotChance: 0.58,
-    chaseChance: 0.45,
-    escapeSearchDepth: 3,
+    decisionIntervalMs: 500,
+    mistakeChance: 0.35,
+    bombChance: 0.38,
+    killShotChance: 0.48,
+    chaseChance: 0.35,
+    escapeSearchDepth: 2,
   },
   [AI_DIFFICULTY.HARD]: {
-    decisionIntervalMs: 260,
-    mistakeChance: 0.14,
-    bombChance: 0.6,
-    killShotChance: 0.75,
-    chaseChance: 0.65,
-    escapeSearchDepth: 5,
+    decisionIntervalMs: 320,
+    mistakeChance: 0.2,
+    bombChance: 0.52,
+    killShotChance: 0.65,
+    chaseChance: 0.55,
+    escapeSearchDepth: 4,
   },
   [AI_DIFFICULTY.EXPERT]: {
-    decisionIntervalMs: 150,
-    mistakeChance: 0.06,
-    bombChance: 0.75,
-    killShotChance: 0.88,
-    chaseChance: 0.8,
-    escapeSearchDepth: 6,
+    decisionIntervalMs: 190,
+    mistakeChance: 0.1,
+    bombChance: 0.68,
+    killShotChance: 0.8,
+    chaseChance: 0.7,
+    escapeSearchDepth: 5,
   },
 });
 

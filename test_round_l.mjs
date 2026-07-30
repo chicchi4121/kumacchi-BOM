@@ -192,9 +192,28 @@ console.log('\n== 4. CubeRendererの回転軸統一(転がり+捻りの2段階)�
   );
   check('init()が(前回dispose()で隠された)canvasを再び表示する', /if \(this\.canvas\) this\.canvas\.style\.visibility = 'visible';/.test(rendererSrc));
 
+  // 【2026-07リファクタ】「移動の面がかわっていない」報告の調査の一環で、
+  // 元々_updateGuest・update()の2箇所に重複していたcubeRenderer.
+  // syncPlayers/rotateToFace/render呼び出しを、共通の_renderCubeStage(time)
+  // ヘルパーに1本化した(万一の実行時例外で3D描画全体が固まるのを防ぐ
+  // try/catchも追加)。そのため呼び出し箇所自体は1つになったが、
+  // ホスト側update()・ゲスト側_updateGuestの両方からこのヘルパーが
+  // 呼ばれていることを確認する。
   const gameSceneSrc = fs.readFileSync('src/scenes/GameScene.js', 'utf8');
   const rotateCalls = gameSceneSrc.match(/cubeRenderer\.rotateToFace\(this\.humanPlayer\.face, this\.humanPlayer\.lastCrossDirection, time\)/g) ?? [];
-  check('GameSceneのホスト側・ゲスト側どちらの描画ループでもlastCrossDirectionをrotateToFaceへ渡している(2箇所)', rotateCalls.length === 2);
+  check(
+    'rotateToFaceへlastCrossDirectionを渡す呼び出しが共通ヘルパー_renderCubeStage内に1本化されている',
+    rotateCalls.length === 1 && /_renderCubeStage\(time\)\s*\{/.test(gameSceneSrc),
+  );
+  const helperCallSites = gameSceneSrc.match(/this\._renderCubeStage\(time\);/g) ?? [];
+  check(
+    '_renderCubeStageがホスト側update()・ゲスト側_updateGuestの両方(2箇所)から呼ばれている',
+    helperCallSites.length === 2,
+  );
+  check(
+    '_renderCubeStageは万一の実行時例外を握りつぶし、3D描画全体が固まらないようにする(try/catch)',
+    /try \{\s*\n\s*this\.cubeRenderer\.syncPlayers/.test(gameSceneSrc) && /} catch \(e\) \{/.test(gameSceneSrc),
+  );
 }
 
 console.log('\n== 5. スタートのカウントダウンを無音化 ==');

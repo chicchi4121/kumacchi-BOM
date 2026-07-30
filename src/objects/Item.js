@@ -16,7 +16,6 @@ export const ITEM_EMOJI = Object.freeze({
   [ITEM_TYPES.BOMB_UP]: '💣',
   [ITEM_TYPES.FIRE_UP]: '🔥',
   [ITEM_TYPES.SPEED_UP]: '👟',
-  [ITEM_TYPES.SHIELD]: '🛡',
   [ITEM_TYPES.LIFE_UP]: '❤️',
   [ITEM_TYPES.GHOST]: '👻',
   [ITEM_TYPES.KICK]: '💥',

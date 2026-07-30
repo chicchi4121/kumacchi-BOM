@@ -20,9 +20,6 @@ const ITEM_EFFECTS = {
   [ITEM_TYPES.SPEED_UP]: (player) => {
     player.speedMultiplier = Math.min(player.speedMultiplier + 0.3, 2.5);
   },
-  [ITEM_TYPES.SHIELD]: (player, scene) => {
-    player.invincibleUntil = scene.time.now + 5000;
-  },
   [ITEM_TYPES.LIFE_UP]: (player) => {
     player.lives += 1;
   },

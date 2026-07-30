@@ -287,6 +287,16 @@ export function buildBombInputMessage(playerId) {
   return { type: 'input', mode: 'bomb', playerId };
 }
 
+/**
+ * 時限装置(⏱)専用の起爆ボタン用の入力メッセージ。「なにか別のボタンを
+ * 押すと爆発するようにしてほしい」への対応(2026-07)。爆弾設置(bomb)とは
+ * 別のmodeにすることで、ホスト側(_onHostNetworkMessage)は
+ * player.hasRemoteDetonatorを持つプレイヤーの入力としてのみ扱う。
+ */
+export function buildDetonateInputMessage(playerId) {
+  return { type: 'input', mode: 'detonate', playerId };
+}
+
 // ---- ホスト→全員: 対戦開始の合図(OnlineLobbyScene→GameScene) -----------------
 
 /**

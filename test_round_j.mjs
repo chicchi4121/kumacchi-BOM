@@ -168,9 +168,20 @@ console.log('\n== 5. トップ画面.pngをタイトル画面に使用 ==');
 console.log('\n== 5b. 「トップ画面全体に画像表示させてほしい」「選択項目は見やすくしてほしい」対応 ==');
 {
   const titleSrc = fs.readFileSync('src/scenes/TitleScene.js', 'utf8');
+  // 【2026-07再修正】「トップ画面の画像が切れているので修正して」への対応で、
+  // 単純な1枚cover方式(はみ出た分をトリミング)から、背景(cover、ティント)+
+  // 前景(contain、絶対にトリミングしない)の2枚重ねに変更した。
   check(
-    'ロゴ画像を画面いっぱいに拡大するcover方式のスケール計算がある',
-    /Math\.max\(this\.scale\.width \/ bg\.width, this\.scale\.height \/ bg\.height\)/.test(titleSrc),
+    'ロゴ画像を画面いっぱいに拡大するcover方式の背景レイヤーがある(bgImage)',
+    /Math\.max\(this\.scale\.width \/ bgImage\.width, this\.scale\.height \/ bgImage\.height\)/.test(titleSrc),
+  );
+  check(
+    'ロゴ画像全体が絶対に切れないcontain方式の前景レイヤーがある(fgImage)',
+    /Math\.min\(this\.scale\.width \/ fgImage\.width, this\.scale\.height \/ fgImage\.height\)/.test(titleSrc),
+  );
+  check(
+    '背景レイヤーはティント(暗め)をかけて前景を引き立てる',
+    /bgImage\.setTint\(/.test(titleSrc),
   );
   check(
     '背景画像の上に(下ほど暗くなる)グラデーションの暗幕を重ねている(画像上部の見え方を損なわないため)',

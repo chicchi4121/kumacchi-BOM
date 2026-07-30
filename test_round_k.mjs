@@ -59,7 +59,9 @@ console.log('== 3. 敵のボム回避を弱める(escapeSearchDepth) ==');
     'escapeSearchDepthはEASY<NORMAL<HARD<EXPERTの順で単調増加する(易しいほど回避が浅く弱い)',
     depths[0] < depths[1] && depths[1] < depths[2] && depths[2] < depths[3],
   );
-  check('EASYのescapeSearchDepthは2である(かなり浅い=回避失敗しやすい)', ai.profile.escapeSearchDepth === 2);
+  // 2026-07「敵をまだ弱くしてほしい」対応(3回目)でEASYのescapeSearchDepthを
+  // 2→1にさらに削った(ほぼ回避できないレベル)。
+  check('EASYのescapeSearchDepthは1である(ほぼ最浅=回避失敗しやすい)', ai.profile.escapeSearchDepth === 1);
 }
 
 console.log('\n== 4. 新アイテム「時限装置」(⏱ TIMER: リモート起爆)対応 ==');
@@ -71,7 +73,13 @@ console.log('\n== 4. 新アイテム「時限装置」(⏱ TIMER: リモート�
   const gameSceneSrc = fs.readFileSync('src/scenes/GameScene.js', 'utf8');
 
   check('ITEM_TYPESにTIMERが定義されている', /TIMER:\s*'timer'/.test(constSrc));
-  check('ITEM_SPAWN_WEIGHTSにTIMERの重みが定義されている(他のレアアイテムと同様に抑えめ)', /\[ITEM_TYPES\.TIMER\]:\s*1/.test(constSrc));
+  // 【2026-07再設計】「時限装置アイテムの出現個数を1ステージ4個にして」
+  // への対応で、TIMERはもうITEM_SPAWN_WEIGHTSの重み付き抽選には含めず、
+  // TIMER_ITEM_COUNT_PER_STAGE(固定数)による専用の割り当て方式
+  // (CubeStage._assignFixedTimerItems)に変わった。詳細な検証は
+  // test_round_m.mjsで行う。
+  check('ITEM_SPAWN_WEIGHTSにはもうTIMERの重みが定義されていない(固定数出現方式へ移行)', !/\[ITEM_TYPES\.TIMER\]/.test(constSrc.split('ITEM_SPAWN_WEIGHTS')[1]?.split('});')[0] ?? ''));
+  check('TIMER_ITEM_COUNT_PER_STAGEが定義されている', /TIMER_ITEM_COUNT_PER_STAGE\s*=\s*4/.test(constSrc));
   check('ITEM_EMOJIにTIMER(⏱)の表示が定義されている', /\[ITEM_TYPES\.TIMER\]:\s*'⏱'/.test(itemSrc));
 
   check(
@@ -80,16 +88,26 @@ console.log('\n== 4. 新アイテム「時限装置」(⏱ TIMER: リモート�
   );
   check('Player.jsがhasRemoteDetonatorフィールドをfalse初期値で持つ', /this\.hasRemoteDetonator = false;/.test(playerSrc));
 
+  // 【2026-07再設計】「時限装置取った後はプレイヤーが指示出すか、誘爆以外で
+  // 爆発しないようにして。なにか別のボタン押すと爆発するような感じ」への
+  // 対応で、リモート起爆はもう「爆弾設置できない場面のフォールバック」では
+  // なく、専用の起爆ボタン(HUMAN_KEY_MAPS.detonate)からのみ呼ばれる設計に
+  // 変わった。詳細な検証はtest_round_m.mjsで行う。
   check(
-    'GameScene._tryPlaceBombが、通常設置できない場面でhasRemoteDetonatorならリモート起爆を試みる',
-    /if \(!canPlaceHere\) \{\s*\n\s*if \(player\.hasRemoteDetonator\) this\._tryRemoteDetonate\(player\);/.test(gameSceneSrc),
+    'GameScene._tryPlaceBombはもうhasRemoteDetonatorによるフォールバック起爆をしない(専用ボタンに分離)',
+    !/if \(player\.hasRemoteDetonator\) this\._tryRemoteDetonate\(player\);/.test(gameSceneSrc),
+  );
+  check(
+    'Bomb作成時にplayer.hasRemoteDetonatorをnoAutoFuseとして渡している',
+    /noAutoFuse: player\.hasRemoteDetonator/.test(gameSceneSrc),
   );
   check(
     '_tryRemoteDetonateが自分の未起爆の爆弾を全てdetonate()する(導火線タイマー任せにしない)',
-    /_tryRemoteDetonate\(player\)\s*\{\s*\n\s*const ownBombs = this\.bombs\.filter\(\(b\) => b\.ownerId === player\.playerId && !b\.detonated\);/.test(
+    /_tryRemoteDetonate\(player\)\s*\{\s*\n\s*if \(!player \|\| !player\.hasRemoteDetonator\) return;\s*\n\s*const ownBombs = this\.bombs\.filter\(\(b\) => b\.ownerId === player\.playerId && !b\.detonated\);/.test(
       gameSceneSrc,
     ) && /for \(const bomb of ownBombs\) \{\s*\n\s*bomb\.detonate\(\);/.test(gameSceneSrc),
   );
+  check('_tryRemoteDetonateは⏱未取得のプレイヤーには何もしない(早期return)', /if \(!player \|\| !player\.hasRemoteDetonator\) return;/.test(gameSceneSrc));
   check('_tryRemoteDetonateは自分の爆弾が1つも無い場合は何もしない(早期return)', /if \(ownBombs\.length === 0\) return;/.test(gameSceneSrc));
 }
 
