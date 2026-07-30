@@ -422,7 +422,12 @@ export class OnlineLobbyScene extends Phaser.Scene {
     let gameNetwork;
     let roomCode;
     try {
-      gameNetwork = new NetworkSystem();
+      // 【不具合修正】待合ロビーで使っていたclientIdをそのまま引き継ぐ
+      // (NetworkSystemのコンストラクタ参照)。新規に生成し直すと、下で
+      // 組み立てるclientToPlayerId(待合ロビー時点のclientIdベース)と
+      // 実際の対戦部屋で使われるclientIdが食い違い、ゲストが自分の
+      // playerIdを解決できなくなる。
+      gameNetwork = new NetworkSystem(this._autoMatchNetwork.clientId);
       roomCode = await gameNetwork.createRoom();
     } catch (e) {
       console.error('[OnlineLobbyScene] オートマッチングでの対戦部屋作成に失敗しました。', e);
@@ -466,7 +471,9 @@ export class OnlineLobbyScene extends Phaser.Scene {
 
     let gameNetwork;
     try {
-      gameNetwork = new NetworkSystem();
+      // 【不具合修正】上のホスト側と同じ理由で、待合ロビーのclientIdを
+      // 引き継いで対戦部屋に参加する。
+      gameNetwork = new NetworkSystem(this._autoMatchNetwork.clientId);
       await gameNetwork.joinRoom(msg.roomCode);
     } catch (e) {
       console.error('[OnlineLobbyScene] オートマッチング先の部屋への接続に失敗しました。', e);

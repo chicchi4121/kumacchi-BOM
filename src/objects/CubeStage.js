@@ -81,12 +81,23 @@ export class CubeStage {
    *
    * @param {number} playerCount - 参加人数(最大6、面の数まで)
    * @param {number} humanCount - 人間プレイヤーの人数(PVP対応)。1なら
-   *   従来通り「参加者1人につき1面、各面の中央からスタート」。2以上なら
-   *   人間プレイヤー全員を`HOME_FACE`(先頭の面)に集めて同じ面から一緒に
-   *   スタートさせ(お互いの姿が見え、カメラも常にその面を映すため対戦
-   *   しやすい)、残りのAIは1人ずつ別の面に配置する。
+   *   従来通り「参加者1人につき1面、各面の中央からスタート」。2以上かつ
+   *   options.humansShareFaceがtrue(既定)なら、人間プレイヤー全員を
+   *   `HOME_FACE`(先頭の面)に集めて同じ面から一緒にスタートさせ(お互いの
+   *   姿が見え、カメラも常にその面を映すため対戦しやすい)、残りのAIは
+   *   1人ずつ別の面に配置する。これは同一画面・同一キーボードで対戦する
+   *   ローカルPVP向けの挙動。
+   * @param {object} [options]
+   * @param {boolean} [options.humansShareFace=true] - falseを指定すると、
+   *   人間プレイヤーが2人以上でも1人1面(各面独立)に配置する。オンライン
+   *   対戦(各プレイヤーが別々の端末・別々の画面を見る)では、同じ面に
+   *   まとめてしまうと開始地点が重なり、カメラも他のプレイヤーの操作に
+   *   引っ張られてしまう(「スポーン地点もそもそも別で、お互い独立して
+   *   操作できるようにして」という報告への対応)ため、GameSceneから
+   *   オンライン時にfalseを渡す。
    */
-  generate(playerCount = 1, humanCount = 1) {
+  generate(playerCount = 1, humanCount = 1, options = {}) {
+    const { humansShareFace = true } = options;
     const centerCol = Math.floor(this.cols / 2);
     const centerRow = Math.floor(this.rows / 2);
 
@@ -102,7 +113,7 @@ export class CubeStage {
     const count = Math.max(1, Math.min(MAX_PLAYERS, playerCount, CUBE_FACE_NAMES.length));
     const humans = Math.max(1, Math.min(humanCount, count));
 
-    if (humans <= 1) {
+    if (humans <= 1 || !humansShareFace) {
       // 従来通り: 参加者(AIも含め)1人につき1面、各面の中央が安全地帯。
       // Stage.generate()は既定では隅(buildStartCandidatesの1番目)を
       // 安全地帯にするため、サイコロステージでは各面の中央をその面の

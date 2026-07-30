@@ -26,13 +26,28 @@ function makeClientId() {
 }
 
 export class NetworkSystem {
-  constructor() {
+  /**
+   * @param {string} [clientId] - 既存のclientIdを引き継ぎたい場合に指定する。
+   *   省略時は新規に生成する(makeClientId())。
+   *
+   *   【不具合修正】オートマッチングでは、待合ロビー用チャンネル
+   *   (_autoMatchNetwork)とは別に、実際の対戦部屋用に新しいNetworkSystemを
+   *   生成していたが、従来はその際にclientIdも新規生成し直していたため、
+   *   ホストが待合ロビー時点の参加者一覧(古いclientId)を元に組み立てた
+   *   clientToPlayerIdマップと、対戦部屋で実際に使われるclientId
+   *   (新しく生成された別物)が一致せず、ゲスト側が「自分のplayerId」を
+   *   永久に解決できない(常にnullになりhumanPlayerがホストの分に
+   *   フォールバックしてしまう)不具合があった。対戦部屋用の
+   *   NetworkSystemを作る際は、待合ロビーで使っていたclientIdをそのまま
+   *   引き継ぐことでこれを解消する(OnlineLobbyScene参照)。
+   */
+  constructor(clientId) {
     this.client = null;
     this.channel = null;
     this.roomCode = null;
     this.isHost = false;
     this.connected = false;
-    this.clientId = makeClientId();
+    this.clientId = clientId ?? makeClientId();
     this._messageHandlers = new Set();
     this._presenceHandlers = new Set();
   }
@@ -115,10 +130,22 @@ export class NetworkSystem {
     return this.channel?.presenceState() ?? {};
   }
 
-  /** メッセージを部屋の全員(自分を含む)へ送信する。NetworkProtocol.jsのbuild*関数で組み立てた値を渡す */
+  /**
+   * メッセージを部屋の全員(自分を含む)へ送信する。NetworkProtocol.jsの
+   * build*関数で組み立てた値を渡す。
+   *
+   * 【不具合修正】送信するpayloadに常にsenderClientId(送信元の識別子)を
+   * 付与するようにした。以前はこれが一切付与されておらず、
+   * GameScene._onHostNetworkMessageがゲストからのinputメッセージを
+   * `clientToPlayerId[msg.senderClientId]`で誰からの入力か判定しようと
+   * しても常にundefinedになり、ゲストの移動/爆弾入力がホスト側で毎回
+   * 無条件に無視されていた(「1人しか操作できない」不具合の直接の原因)。
+   * トランスポート層(本クラス)の責務として、中身の意味づけ
+   * (NetworkProtocol.js)を汚さずここで一律に付与する。
+   */
   send(message) {
     if (!this.channel) return;
-    this.channel.send({ type: 'broadcast', event: 'msg', payload: message });
+    this.channel.send({ type: 'broadcast', event: 'msg', payload: { ...message, senderClientId: this.clientId } });
   }
 
   /** 接続を切って部屋から離脱する */

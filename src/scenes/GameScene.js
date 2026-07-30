@@ -145,7 +145,15 @@ export class GameScene extends Phaser.Scene {
 
     this.stage = new CubeStage();
     const totalParticipants = Math.min(6, this.config.playerCount + this.config.aiCount);
-    this.stage.generate(totalParticipants, this.config.humanCount);
+    // 「オンラインで2プレイヤーの時同じ面にいて独立して操作できない」への
+    // 対応: 同一画面のローカルPVPでは複数人が同じ面に集まる方が対戦しやすい
+    // が、オンライン対戦は各プレイヤーが別々の端末・別々の画面を見るため、
+    // 同じ面に集めるとスポーン地点が重なり合い、カメラも他人の操作に
+    // 引っ張られてしまう。オンライン時はhumansShareFace:falseを渡し、
+    // 人間プレイヤーも1人1面(各面独立)に配置する。
+    this.stage.generate(totalParticipants, this.config.humanCount, {
+      humansShareFace: this.config.mode !== 'online',
+    });
 
     this.bombs = [];
     this.items = [];
@@ -518,7 +526,7 @@ export class GameScene extends Phaser.Scene {
     this._updateHud();
     if (this.cubeRenderer?.ready) {
       this.cubeRenderer.syncPlayers(this.players, time);
-      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, time);
+      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, this.humanPlayer.lastCrossDirection, time);
       this.cubeRenderer.render(time);
     }
   }
@@ -710,11 +718,17 @@ export class GameScene extends Phaser.Scene {
       this.players.push(player);
     }
 
-    // humanPlayers[0]が「プレイヤー1」= カメラが常に追従する基準プレイヤー。
-    // PVP(humanCount>=2)ではhumanPlayers全員が同じ面から一緒にスタートする
-    // ため、プレイヤー1を映しておけば他の人間プレイヤーも同じ面にいる限り
-    // 画面に映る(v1の割り切り: 誰かが単独で他の面へ渡った場合、カメラは
-    // 引き続きプレイヤー1の面だけを映す)。
+    // humanPlayers[0]が「プレイヤー1」= このブラウザのカメラが常に追従する
+    // 基準プレイヤー。ローカルPVP(同一画面・同一キーボード、humanCount>=2)
+    // ではhumanPlayers全員が同じ面から一緒にスタートするため、プレイヤー1を
+    // 映しておけば他の人間プレイヤーも同じ面にいる限り画面に映る(v1の
+    // 割り切り: 誰かが単独で他の面へ渡った場合、カメラは引き続き
+    // プレイヤー1の面だけを映す)。オンライン対戦のホストでは、
+    // this.humanPlayersには対戦全体の人間プレイヤー全員(ホスト+各ゲスト)が
+    // 含まれるが、buildClientToPlayerIdによりホストは常に先頭(playerId=1)
+    // になるため、humanPlayers[0]=ホスト自身の分となり、このブラウザの
+    // カメラは正しく自分の分だけに追従する(各ゲストも_applyMatchInit側で
+    // 自分自身のplayerIdを個別に解決するため、双方とも自分の面だけを見る)。
     this.humanPlayers = this.players.filter((p) => !p.isAI);
     this.humanPlayer = this.humanPlayers[0];
   }
@@ -1096,7 +1110,8 @@ export class GameScene extends Phaser.Scene {
     COUNTDOWN_STEPS.forEach((label, i) => {
       this.time.delayedCall(i * COUNTDOWN_STEP_MS, () => {
         this.countdownText.setText(label);
-        soundSystem.playSE(label === 'START' ? 'countdown_go' : 'countdown_tick');
+        // 「スタートのカウントダウンは無音にして」への対応: 以前はここで
+        // countdown_tick/countdown_go効果音を鳴らしていたが、無音にする。
       });
     });
 
@@ -1117,12 +1132,26 @@ export class GameScene extends Phaser.Scene {
     return this.bombs.some((b) => !b.detonated && b.face === face && b.col === col && b.row === row);
   }
 
+  /**
+   * 「新しいアイテム時限装置機能アイテムを追加してほしい」への対応:
+   * ⏱(TIMER)取得済みプレイヤーが、新しく爆弾を置けない状況(既に上限数
+   * 置いている・自分の爆弾の上に立っている等)で爆弾ボタンを押した場合は、
+   * 新規設置の代わりに自分が既に置いている爆弾を全て今すぐ起爆する
+   * (リモート起爆。導火線(BOMB_FUSE_MS)任せにせず自分のタイミングで
+   * 爆発させられる)。⏱未取得なら、これまで通り単に何もしない。
+   */
   _tryPlaceBomb(player) {
     if (!player || !player.isAlive) return;
-    if (!player.canPlaceBomb()) return;
-    if (this._isTileOccupiedByBomb(player.face, player.col, player.row)) return;
-    // 壊せる壁(👻取得済みで中に入り込んでいる)の中に立っている間は爆弾を設置できない
-    if (!this.stage.canPlaceBombAt(player.face, player.col, player.row)) return;
+
+    const canPlaceHere =
+      player.canPlaceBomb() &&
+      !this._isTileOccupiedByBomb(player.face, player.col, player.row) &&
+      this.stage.canPlaceBombAt(player.face, player.col, player.row);
+
+    if (!canPlaceHere) {
+      if (player.hasRemoteDetonator) this._tryRemoteDetonate(player);
+      return;
+    }
 
     const bomb = new Bomb(this, player.face, player.col, player.row, {
       ownerId: player.playerId,
@@ -1132,6 +1161,23 @@ export class GameScene extends Phaser.Scene {
     this.bombs.push(bomb);
     this.cubeRenderer?.addBomb(bomb);
     player.onBombPlaced();
+    soundSystem.playSE('bomb_place');
+  }
+
+  /**
+   * ⏱(TIMER)によるリモート起爆本体。playerが所有する、まだ爆発していない
+   * 全ての爆弾(蹴られてスライド中のものも含む)を即座に起爆する。
+   * 1つも無ければ何もしない。誘爆と同じ`detonate()`をそのまま呼ぶだけ
+   * なので、導火線タイマーの解除・爆風計算・ネットワーク同期(オンライン
+   * 対戦時の explosion イベント送信)は全て既存の`_onBombDetonate`の
+   * 仕組みがそのまま面倒を見る。
+   */
+  _tryRemoteDetonate(player) {
+    const ownBombs = this.bombs.filter((b) => b.ownerId === player.playerId && !b.detonated);
+    if (ownBombs.length === 0) return;
+    for (const bomb of ownBombs) {
+      bomb.detonate();
+    }
     soundSystem.playSE('bomb_place');
   }
 
@@ -1449,7 +1495,7 @@ export class GameScene extends Phaser.Scene {
 
     if (this.cubeRenderer?.ready) {
       this.cubeRenderer.syncPlayers(this.players, time);
-      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, time);
+      if (this.humanPlayer) this.cubeRenderer.rotateToFace(this.humanPlayer.face, this.humanPlayer.lastCrossDirection, time);
       this.cubeRenderer.render(time);
     }
 

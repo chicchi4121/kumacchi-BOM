@@ -158,6 +158,9 @@ export function serializePlayerState(player) {
     maxBombs: player.maxBombs,
     blastRange: player.blastRange,
     colorIndex: player.colorIndex,
+    // 「面移動の回転方向」対応: ゲスト側のカメラ回転演出(CubeRenderer.
+    // rotateToFace)が、実際に面をまたいだ移動方向を知るために同期する。
+    lastCrossDirection: player.lastCrossDirection ?? null,
     stats: {
       kills: player.stats?.kills ?? 0,
       bombsExploded: player.stats?.bombsExploded ?? 0,
@@ -197,6 +200,7 @@ export function applyPlayerState(mirrorPlayer, state, nowMs) {
   mirrorPlayer.col = state.col;
   mirrorPlayer.row = state.row;
   mirrorPlayer.facing = state.facing;
+  mirrorPlayer.lastCrossDirection = state.lastCrossDirection ?? null;
   mirrorPlayer.isAlive = state.isAlive;
   mirrorPlayer.lives = state.lives;
   mirrorPlayer.activeBombCount = state.activeBombCount;

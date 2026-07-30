@@ -4,11 +4,29 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>くまっちボム！</title>
+  <meta name="description" content="くまっちボム！ - 1〜6人で対戦できる、サイコロ状の6面ステージが舞台のボンバーマン風対戦ゲーム。" />
+  <!--
+    「ブラウザ全体をデザインして」への対応: ブラウザタブのアイコン(favicon)・
+    スマホでホーム画面に追加した際のアイコン(apple-touch-icon)・アドレス
+    バーの色(theme-color)を、トップ画面のロゴ画像から生成したものに
+    差し替える(以前はいずれも未設定でブラウザの既定値のままだった)。
+  -->
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/images/title/favicon-32.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/images/title/favicon-180.png" />
+  <meta name="theme-color" content="#2b211d" />
   <style>
     html, body {
       margin: 0;
       padding: 0;
-      background: #1e1e1e;
+      /*
+        「ブラウザ全体をデザインして」への対応: 単色の暗いグレー(#1e1e1e)
+        だった背景を、トップ画面のロゴ画像から採った暖色系のトーンを使った
+        ゆるいグラデーションにし、ゲーム全体の世界観とブラウザの余白部分の
+        印象を統一する(通常はcanvasが画面全体を覆うため見えないが、
+        リサイズ直後の一瞬や極端なアスペクト比の端末でも違和感が出ない
+        ようにする保険も兼ねる)。
+      */
+      background: radial-gradient(ellipse at center, #2f2420 0%, #1a1512 100%);
       height: 100%;
       overflow: hidden;
       display: flex;
@@ -27,11 +45,17 @@
         コンテナが0×0だとゲーム画面ごと非表示になる(タイトル画面すら
         表示されない不具合の原因)。ビューポート全体を占めるよう明示的に
         サイズを与えて解消する。
+        スマホのアドレスバー等の動的ツールバーで100vhが実際の表示領域より
+        大きくなる問題を避けるため、対応ブラウザでは100dvh(動的ビュー
+        ポート高さ)を優先し、非対応ブラウザ向けに100vhもフォールバックとして
+        残す。
       */
       width: 100vw;
       height: 100vh;
+      height: 100dvh;
       max-width: 100vw;
       max-height: 100vh;
+      max-height: 100dvh;
     }
     /*
       サイコロ6面ステージ(Phase3)用: Three.jsで3D描画するcanvasを

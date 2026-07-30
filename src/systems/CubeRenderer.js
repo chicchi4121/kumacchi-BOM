@@ -107,8 +107,14 @@ export class CubeRenderer {
     this._playerTextures = new Map(); // playerId -> { down, up, left, right }: CanvasTexture (人間・AI問わず)
     this._currentFace = null;
     this._isRotating = false;
-    this._rotationFrom = null;
-    this._rotationTo = null;
+    // 面をまたぐ回転アニメーションは「転がり(tumble、移動方向に応じた
+    // 固定軸まわりのちょうど90度回転)」→「捻り(twist、必要な場合のみの
+    // 追加の微調整回転)」の2段階で構成する(rotateToFace参照)。
+    this._rotationTumbleFrom = null;
+    this._rotationTumbleTo = null;
+    this._rotationTwistFrom = null;
+    this._rotationTwistTo = null;
+    this._rotationTumbleFrac = 1;
     this._rotationStartAt = 0;
     this._rotationDurationMs = CUBE_ROLL_DURATION_MS;
   }
@@ -118,6 +124,10 @@ export class CubeRenderer {
    * @param {CubeStage} stage
    */
   async init(stage) {
+    // 前回の対戦終了時にdispose()で非表示にしたcanvasを、新しい対戦開始時に
+    // 再び表示する(「トップ画面にもどった時前回のプレイ画面の最後が
+    // 残ってる」不具合対策とセット。dispose()参照)。
+    if (this.canvas) this.canvas.style.visibility = 'visible';
     const THREE = await import(/* webpackIgnore: true */ 'three');
     this._THREE = THREE;
     this.stage = stage;
@@ -226,6 +236,37 @@ export class CubeRenderer {
 
     const m = new THREE.Matrix4().makeBasis(a, b, c);
     this._mdstQuaternion = new THREE.Quaternion().setFromRotationMatrix(m);
+
+    // 「上から面移動したら縦回転、横から面移動は横回転にしてほしい」への
+    // 対応: 画面の水平方向軸(a=targetRight)・垂直方向軸(b=targetUp)を
+    // 保持しておき、面をまたぐ移動方向ごとに固定で「どちらの軸まわりに
+    // ちょうど90度転がすか」を定義する(rotateToFace参照)。
+    // 数学的な裏付け(verify_cube_rotation.mjsと同じ手法で全24通りの
+    // 面×方向の組み合わせを検証済み): カメラが固定されているため、
+    // 「aまたはbのどちらの軸まわりに90度転がすか」は現在どの面を見て
+    // いるかに関わらず、移動方向(up/down/left/right)だけで一意に決まる。
+    this._axisA = a.clone();
+    this._axisB = b.clone();
+    this._directionRollQuaternions = {
+      up: new THREE.Quaternion().setFromAxisAngle(this._axisA, Math.PI / 2),
+      down: new THREE.Quaternion().setFromAxisAngle(this._axisA, -Math.PI / 2),
+      left: new THREE.Quaternion().setFromAxisAngle(this._axisB, Math.PI / 2),
+      right: new THREE.Quaternion().setFromAxisAngle(this._axisB, -Math.PI / 2),
+    };
+  }
+
+  /**
+   * 2つのクォータニオンについて、fromから見て最短経路になるよう
+   * toの符号を揃えたものを返す(クォータニオンはqと-qが同じ回転を表す
+   * ため、符号を揃えないとslerpが遠回りしてしまうことがある。
+   * verify_cube_rotation.mjsで指摘されていたが未実装だった不具合の修正)。
+   */
+  _ensureShortestPath(from, to) {
+    if (from.dot(to) < 0) {
+      const THREE = this._THREE;
+      return new THREE.Quaternion(-to.x, -to.y, -to.z, -to.w);
+    }
+    return to.clone();
   }
 
   _getFaceQuaternion(face) {
@@ -544,10 +585,32 @@ export class CubeRenderer {
   /**
    * プレイヤーが面をまたいで移動した際、サイコロが転がったように見える
    * アニメーションで指定した面を正面へ向ける。同じ面のままの場合は何もしない。
+   *
+   * 【2026-07更新: 移動方向に応じた回転軸の統一】
+   * 「上から面移動したら縦回転、横から面移動は横回転にしてほしい。面の
+   * 切り替わり方がぐちゃぐちゃ」への対応。以前は現在の面の姿勢Q_Aから
+   * 新しい面の姿勢Q_Bへ直接slerpしていたため、(1)クォータニオンの符号を
+   * 揃えていなかったため一部の組み合わせで遠回りの回転になる、
+   * (2)そもそも回転軸がface同士の組み合わせ次第で不揃いになる、という
+   * 2つの問題があった。
+   *
+   * 数値検証の結果(全24通りの面×移動方向の組み合わせで確認済み。
+   * verify_cube_rotation.mjsと同じ手法): このカメラ固定方式では、
+   * 「移動方向ごとに固定された軸(縦移動=_axisA、横移動=_axisB)まわりの
+   * ちょうど90度回転」を現在の姿勢に適用したあと、(必要であれば)
+   * カメラの正面方向軸(奥行き方向)まわりの追加の捻り回転を行うことで、
+   * 必ず数学的に正しい最終姿勢(_getTargetQuaternionForFace)に到達できる
+   * ことが分かった。追加の捻りが不要(0度)な組み合わせが大半で、その
+   * 場合は「押した方向にちょうど90度転がるだけ」の単純な回転になり、
+   * 常にユーザーの要望通りの軸で回転する。捻りが必要な一部の組み合わせ
+   * (TOP/BOTTOMを経由する遷移の一部)でも、転がり(90度)→捻りの順に
+   * 滑らかに繋げて再生することで、突然向きの定まらない回転にはならない。
    * @param {string} face
+   * @param {'up'|'down'|'left'|'right'|null} direction - 面をまたぐ
+   *   きっかけとなった移動方向(Player.lastCrossDirection参照)。
    * @param {number} now
    */
-  rotateToFace(face, now) {
+  rotateToFace(face, direction, now) {
     if (!this.ready || !face || this._currentFace === face) return;
     if (this._currentFace === null) {
       // まだ一度もsnapToFace/rotateToFaceが呼ばれていない場合は、初回のみ
@@ -555,8 +618,36 @@ export class CubeRenderer {
       this.snapToFace(face);
       return;
     }
-    this._rotationFrom = this._cubeRoot.quaternion.clone();
-    this._rotationTo = this._getTargetQuaternionForFace(face);
+
+    const qFrom = this._cubeRoot.quaternion.clone();
+    const qTargetRaw = this._getTargetQuaternionForFace(face);
+    const roll90 = this._directionRollQuaternions[direction];
+
+    if (!roll90) {
+      // directionが不明(念のための保険。通常は発生しない)な場合のみ、
+      // 従来通り2つの姿勢間を直接(最短経路で)補間する。
+      this._rotationTumbleFrom = qFrom;
+      this._rotationTumbleTo = this._ensureShortestPath(qFrom, qTargetRaw);
+      this._rotationTwistFrom = this._rotationTumbleTo;
+      this._rotationTwistTo = this._rotationTumbleTo;
+      this._rotationTumbleFrac = 1;
+    } else {
+      const qMid = roll90.clone().multiply(qFrom);
+      const qTarget = this._ensureShortestPath(qMid, qTargetRaw);
+      const twistDot = Math.max(-1, Math.min(1, qMid.dot(qTarget)));
+      const twistAngle = 2 * Math.acos(twistDot);
+
+      this._rotationTumbleFrom = qFrom;
+      this._rotationTumbleTo = qMid;
+      this._rotationTwistFrom = qMid;
+      this._rotationTwistTo = qTarget;
+      // 「転がり(常に90度固定)」と「捻り(0〜180度)」それぞれの所要時間を
+      // 回転量に比例して配分する。捻りが不要(0度)な場合は転がりだけで
+      // アニメーション全体を使う。
+      const TUMBLE_ANGLE = Math.PI / 2;
+      this._rotationTumbleFrac = twistAngle < 1e-4 ? 1 : TUMBLE_ANGLE / (TUMBLE_ANGLE + twistAngle);
+    }
+
     this._rotationStartAt = now;
     this._rotationDurationMs = CUBE_ROLL_DURATION_MS;
     this._isRotating = true;
@@ -567,7 +658,15 @@ export class CubeRenderer {
     if (!this._isRotating) return;
     const t = Math.min(1, (now - this._rotationStartAt) / this._rotationDurationMs);
     const eased = easeInOutCubic(t);
-    this._cubeRoot.quaternion.copy(this._rotationFrom).slerp(this._rotationTo, eased);
+    const tumbleFrac = this._rotationTumbleFrac ?? 1;
+    if (eased <= tumbleFrac) {
+      const localT = tumbleFrac > 0 ? eased / tumbleFrac : 1;
+      this._cubeRoot.quaternion.copy(this._rotationTumbleFrom).slerp(this._rotationTumbleTo, localT);
+    } else {
+      const remainingFrac = 1 - tumbleFrac;
+      const localT = remainingFrac > 0 ? (eased - tumbleFrac) / remainingFrac : 1;
+      this._cubeRoot.quaternion.copy(this._rotationTwistFrom).slerp(this._rotationTwistTo, localT);
+    }
     if (t >= 1) this._isRotating = false;
   }
 
@@ -612,6 +711,18 @@ export class CubeRenderer {
     for (const texture of this._itemTextureCache.values()) {
       texture.dispose();
     }
+    // 「トップ画面にもどった時前回のプレイ画面の最後が残ってる」不具合の
+    // 修正: renderer.dispose()はGPUリソースを解放するだけで、canvasの
+    // 描画バッファ(最後に描画された1フレーム分の映像)自体は消さない。
+    // 以降render()が呼ばれなくなる(readyがfalseになる)ため、そのまま
+    // だと対戦終了後タイトル画面に戻っても前の対戦の最後のコマが
+    // #cube-canvas上にずっと表示され続けてしまう。明示的に1度空の
+    // シーンをレンダーして描画バッファを消し、かつ念のためcanvas自体も
+    // 非表示にしておく(次回GameScene.create()時にinit()側で再び表示する)。
+    if (this.renderer && this.scene && this.camera) {
+      this.renderer.clear();
+    }
+    if (this.canvas) this.canvas.style.visibility = 'hidden';
     this.renderer?.dispose();
     this.ready = false;
   }

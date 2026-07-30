@@ -53,10 +53,23 @@ export class Player {
     this.speedMultiplier = 1;
     this.canPassSoftBlock = false; // 👻
     this.canKickBombs = false; // 💥
+    // 「新しいアイテム時限装置機能アイテムを追加してほしい」への対応。
+    // trueになると、自分の爆弾は導火線任せにせず、爆弾ボタンを押した
+    // タイミングで手動起爆できるようになる(GameScene._tryPlaceBomb参照)。
+    this.hasRemoteDetonator = false; // ⏱
     this.invincibleUntil = 0;
     this.isAlive = true;
     this.isMoving = false;
     this.facing = 'down';
+
+    // 「面移動時、上から面移動したら縦回転、横から面移動は横回転にして
+    // ほしい」への対応。実際に面をまたいだ(resolved.crossed===true)際の
+    // 移動方向('up'/'down'/'left'/'right')を記録しておき、CubeRenderer側の
+    // カメラ回転演出(rotateToFace)がどの軸まわりに転がすべきかを判断する
+    // ために使う(tryMove参照)。オンライン対戦のゲスト側では、この値は
+    // ホストのPlayerからNetworkProtocol.serializePlayerState/
+    // applyPlayerState経由でミラーされる。
+    this.lastCrossDirection = null;
 
     // 「一人1回まで爆弾に当たっても大丈夫なようにしてほしい」という要望に
     // 対応: 各プレイヤーは試合中1回だけ、爆風に当たってもライフを失わない
@@ -116,6 +129,10 @@ export class Player {
     this._prevFace = this.face;
     this._prevCol = this.col;
     this._prevRow = this.row;
+
+    if (resolved.crossed) {
+      this.lastCrossDirection = direction;
+    }
 
     this.isMoving = true;
     this.face = resolved.face;
